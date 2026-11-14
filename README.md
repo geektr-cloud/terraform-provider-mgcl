@@ -30,9 +30,12 @@ Provider address：`registry.opentofu.org/geektr-cloud/mgcl`
 典型流程：
 
 ```bash
+# 可选：dev.tfrc 放在 ~/.tofurc 时无需设置
 export TF_CLI_CONFIG_FILE=/path/to/dev.tfrc
 mgcl run --db ./mgcl.db -- tofu plan
 ```
+
+`mgcl run --` 未设置 `TF_CLI_CONFIG_FILE` 时自动读取并合并默认的 `~/.tofurc`（存在时）；显式设置时使用指定文件，覆盖默认 `~/.tofurc`。合并结果写入临时 CLI config 传给子进程。
 
 `mgcl run --` 只注入上面两个变量和既有的 `TF_*` 变量，不注入 Secret value。Secret value 由 provider 在 Open 时通过 `POST /api/mgcl/v1/secrets:read` 读取。
 
@@ -99,11 +102,14 @@ provider_installation {
 ```
 
 ```bash
+# 可选：dev.tfrc 就是 ~/.tofurc 时无需设置
 export TF_CLI_CONFIG_FILE=/home/me/src/terraform-provider-mgcl/dev.tfrc
 tofu plan
 ```
 
-必须显式设置 `TF_CLI_CONFIG_FILE`。`mgcl run --` 只读取并合并该变量指定的 CLI config，不读取默认的 `~/.tofurc`；只依赖默认文件不会让 `provider_installation` 生效。
+`dev_overrides` 的路径必须指向**包含 `terraform-provider-mgcl` 二进制的目录**（上面示例的 `bin/`），不是二进制文件本身。
+
+`TF_CLI_CONFIG_FILE` 可选：未设置时 `mgcl run --` 自动继承 `~/.tofurc`；显式设置时以该变量为准，覆盖默认 `~/.tofurc`。`dev_overrides` 会跳过 `tofu init`；需要真正执行 `tofu init` 时改用方式二。
 
 ### 方式二：filesystem mirror（需要 tofu init）
 
@@ -127,9 +133,12 @@ provider_installation {
 ```
 
 ```bash
+# dev.tfrc 不在 ~/.tofurc 时才需要显式设置
 export TF_CLI_CONFIG_FILE=/opt/tofu-mirror/dev.tfrc
 tofu init
 ```
+
+与 `dev_overrides` 不同，filesystem mirror 支持真实 `tofu init`。`mgcl run --` 未设置 `TF_CLI_CONFIG_FILE` 时同样继承 `~/.tofurc`；显式设置时覆盖默认文件。
 
 也支持 packed 布局：`.../mgcl/terraform-provider-mgcl_0.1.0_linux_amd64.zip`。
 

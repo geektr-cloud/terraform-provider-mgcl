@@ -274,7 +274,9 @@ func installPackedFilesystemMirror(t *testing.T, binDir, version string) string 
 }
 
 // tofuEnv builds a hermetic environment for tofu runs. HOME is isolated so a
-// developer's ~/.tofurc cannot leak in; TF_CLI_CONFIG_FILE must be explicit.
+// developer's real ~/.tofurc cannot leak in: tests cover both an explicit
+// TF_CLI_CONFIG_FILE and mgcl run's current behavior of inheriting ~/.tofurc
+// when the variable is unset.
 func tofuEnv(t *testing.T, cliConfig string, extra map[string]string) []string {
 	t.Helper()
 
