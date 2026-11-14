@@ -1,0 +1,169 @@
+package provider
+
+import (
+	"context"
+	"testing"
+
+	"github.com/geektr-cloud/openmgcl/pkg/providerapi"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/provider"
+)
+
+func TestProviderMetadata(t *testing.T) {
+	p := New("1.2.3")()
+
+	var resp provider.MetadataResponse
+	p.Metadata(context.Background(), provider.MetadataRequest{}, &resp)
+
+	if resp.TypeName != "mgcl" {
+		t.Fatalf("TypeName = %q, want %q", resp.TypeName, "mgcl")
+	}
+
+	if resp.Version != "1.2.3" {
+		t.Fatalf("Version = %q, want %q", resp.Version, "1.2.3")
+	}
+}
+
+func TestProviderSchemaHasNoAttributes(t *testing.T) {
+	p := New("dev")()
+
+	var resp provider.SchemaResponse
+	p.Schema(context.Background(), provider.SchemaRequest{}, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	if len(resp.Schema.Attributes) != 0 {
+		t.Fatalf("provider schema has attributes %v, want none", resp.Schema.Attributes)
+	}
+
+	if len(resp.Schema.Blocks) != 0 {
+		t.Fatalf("provider schema has blocks %v, want none", resp.Schema.Blocks)
+	}
+}
+
+func TestProviderRegistersOnlySecretEphemeralResource(t *testing.T) {
+	p := New("dev")()
+
+	if resources := p.Resources(context.Background()); resources != nil {
+		t.Fatalf("provider registers managed resources, want none")
+	}
+
+	if dataSources := p.DataSources(context.Background()); dataSources != nil {
+		t.Fatalf("provider registers data sources, want none")
+	}
+
+	if functions := p.(provider.ProviderWithFunctions).Functions(context.Background()); functions != nil {
+		t.Fatalf("provider registers functions, want none")
+	}
+
+	ephemerals := p.(provider.ProviderWithEphemeralResources).EphemeralResources(context.Background())
+	if len(ephemerals) != 1 {
+		t.Fatalf("ephemeral resources = %d, want 1", len(ephemerals))
+	}
+
+	r := ephemerals[0]()
+	if _, ok := r.(*secretEphemeralResource); !ok {
+		t.Fatalf("ephemeral resource type = %T, want *secretEphemeralResource", r)
+	}
+}
+
+func TestProviderConfigureReadsEnvironmentWithoutNetwork(t *testing.T) {
+	t.Setenv(providerapi.EnvEndpoint, "http://127.0.0.1:1217/")
+	t.Setenv(providerapi.EnvToken, "test-token")
+
+	p := New("dev")()
+
+	var resp provider.ConfigureResponse
+	p.Configure(context.Background(), provider.ConfigureRequest{}, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	data, ok := resp.EphemeralResourceData.(*providerData)
+	if !ok {
+		t.Fatalf("EphemeralResourceData type = %T, want *providerData", resp.EphemeralResourceData)
+	}
+
+	if data.Endpoint != "http://127.0.0.1:1217" {
+		t.Fatalf("Endpoint = %q, want trailing slash trimmed", data.Endpoint)
+	}
+
+	if data.Token != "test-token" {
+		t.Fatalf("Token = %q, want token from environment", data.Token)
+	}
+}
+
+func TestProviderConfigureAllowsMissingEnvironment(t *testing.T) {
+	t.Setenv(providerapi.EnvEndpoint, "")
+	t.Setenv(providerapi.EnvToken, "")
+
+	p := New("dev")()
+
+	var resp provider.ConfigureResponse
+	p.Configure(context.Background(), provider.ConfigureRequest{}, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Configure must not fail without configuration: %v", resp.Diagnostics.Errors())
+	}
+
+	data, ok := resp.EphemeralResourceData.(*providerData)
+	if !ok {
+		t.Fatalf("EphemeralResourceData type = %T, want *providerData", resp.EphemeralResourceData)
+	}
+
+	if data.Endpoint != "" || data.Token != "" {
+		t.Fatalf("provider data = %+v, want empty endpoint and token", data)
+	}
+}
+
+func TestSecretEphemeralResourceConfigureStoresProviderData(t *testing.T) {
+	r := NewSecretEphemeralResource().(*secretEphemeralResource)
+
+	data := &providerData{Endpoint: "http://127.0.0.1:1217", Token: "tok"}
+
+	var resp ephemeral.ConfigureResponse
+	r.Configure(context.Background(), ephemeral.ConfigureRequest{ProviderData: data}, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	if r.providerData != data {
+		t.Fatalf("providerData = %+v, want stored provider data", r.providerData)
+	}
+}
+
+func TestSecretEphemeralResourceConfigureNilProviderData(t *testing.T) {
+	r := NewSecretEphemeralResource().(*secretEphemeralResource)
+
+	var resp ephemeral.ConfigureResponse
+	r.Configure(context.Background(), ephemeral.ConfigureRequest{}, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	if r.providerData != nil {
+		t.Fatalf("providerData = %+v, want nil", r.providerData)
+	}
+}
+
+func TestSecretEphemeralResourceConfigureRejectsUnexpectedData(t *testing.T) {
+	r := NewSecretEphemeralResource().(*secretEphemeralResource)
+
+	var resp ephemeral.ConfigureResponse
+	r.Configure(context.Background(), ephemeral.ConfigureRequest{ProviderData: struct{}{}}, &resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected error for unexpected provider data type")
+	}
+
+	// The diagnostic must not include the token (there is none here) or any
+	// secret-looking value.
+	if got := diagnosticsText(&resp.Diagnostics); got == "" {
+		t.Fatal("expected a diagnostic detail")
+	}
+}
