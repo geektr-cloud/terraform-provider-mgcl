@@ -31,6 +31,25 @@ checksum:
     - glob: terraform-registry-manifest.json
       name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
 
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    signature: "${artifact}.sig"
+    stdin: "{{ .Env.GPG_PASSPHRASE }}"
+    args:
+      - "--batch"
+      - "--yes"
+      - "--pinentry-mode"
+      - "loopback"
+      - "--passphrase-fd"
+      - "0"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+
 release:
   draft: false
   prerelease: auto

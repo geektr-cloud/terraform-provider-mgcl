@@ -16,7 +16,7 @@ import (
 )
 
 // version is overridden at build time with
-// -ldflags "-X main.version=0.2.0".
+// -ldflags "-X main.version=0.2.1".
 var version = "dev"
 
 func main() {

@@ -8,7 +8,7 @@ OpenTofu provider，把 [mgcl](https://github.com/geektr-cloud/openmgcl) 中的 
 
 Provider 不注册 data source。
 
-> v0.2.0 已通过 GitHub Releases 发布，但尚未发布到 OpenTofu Registry。可从 GitHub Release 下载、用 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.0` 安装，或通过 `dev_overrides` / filesystem mirror 使用，详见下文。v0.1.0 仅包含 `mgcl_secret` ephemeral resource；`mgcl_secret_kv` 和单参数 dynamic `provider::mgcl::secret_value` 从 v0.2.0 开始提供。
+> v0.2.1 已通过 GitHub Releases 发布，但尚未发布到 OpenTofu Registry。可从 GitHub Release 下载、用 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.1` 安装，或通过 `dev_overrides` / filesystem mirror 使用，详见下文。v0.1.0 仅包含 `mgcl_secret` ephemeral resource；`mgcl_secret_kv` 和单参数 dynamic `provider::mgcl::secret_value` 从 v0.2.0 开始提供。
 
 > **public 不等于明文存储。** public KV 仍在 `mgcl.db` 中加密保存，读取仍需私钥和 provider token；但 function 结果一旦被 OpenTofu 求值，就是普通数据，可能被写进 plan 文件、state、output 和日志。不要把真正的机密 KV 标记为 public。
 
@@ -144,14 +144,14 @@ resource "mgcl_secret_kv" "region" {
 terraform-provider-mgcl_<version>_<os>_<arch>.zip
 ```
 
-每个 release 同时附带 `terraform-provider-mgcl_<version>_SHA256SUMS` 和 `terraform-provider-mgcl_<version>_manifest.json`。解压后放到 OpenTofu 可读取的位置：`dev_overrides` 目录，或 filesystem mirror 布局（见后文）。
+每个 release 同时附带 `terraform-provider-mgcl_<version>_SHA256SUMS`、它的 detached 二进制 GPG 签名 `terraform-provider-mgcl_<version>_SHA256SUMS.sig`，以及 `terraform-provider-mgcl_<version>_manifest.json`。解压后放到 OpenTofu 可读取的位置：`dev_overrides` 目录，或 filesystem mirror 布局（见后文）。
 
 GitHub Release 资产**不会**自动加入 OpenTofu Registry。没有 `dev_overrides` / filesystem mirror 配置时，OpenTofu 无法从 Registry 安装本 provider。
 
 ### 方式二：go install
 
 ```bash
-go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.0
+go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.1
 ```
 
 二进制安装到 `$(go env GOBIN)`（未设置时为 `$(go env GOPATH)/bin`），文件名为 `terraform-provider-mgcl`。OpenTofu 不会自动发现该路径：把二进制所在目录配置为 `dev_overrides`，或复制到 filesystem mirror 布局后使用。
@@ -189,7 +189,7 @@ tofu plan
 需要走 `tofu init` 的集成场景使用符合 OpenTofu 布局的 filesystem mirror。最小 unpacked 布局：
 
 ```text
-/opt/tofu-mirror/registry.opentofu.org/geektr-cloud/mgcl/0.2.0/linux_amd64/terraform-provider-mgcl_v0.2.0
+/opt/tofu-mirror/registry.opentofu.org/geektr-cloud/mgcl/0.2.1/linux_amd64/terraform-provider-mgcl_v0.2.1
 ```
 
 ```hcl
@@ -213,7 +213,7 @@ tofu init
 
 与 `dev_overrides` 不同，filesystem mirror 支持真实 `tofu init`。`mgcl run --` 未设置 `TF_CLI_CONFIG_FILE` 时同样继承 `~/.tofurc`；显式设置时覆盖默认文件。
 
-也支持 packed 布局：`.../mgcl/terraform-provider-mgcl_0.2.0_linux_amd64.zip`。
+也支持 packed 布局：`.../mgcl/terraform-provider-mgcl_0.2.1_linux_amd64.zip`。
 
 ## 行为与保证
 
@@ -277,25 +277,25 @@ go mod tidy -diff
 
 CI（`.github/workflows/ci.yml`）在 push `main`、pull request 和手动触发时运行，矩阵覆盖 OpenTofu `1.11.11` 与 `1.13.9`，执行 gofmt 检查、`go test ./... -count=1`、`go test -race -short ./... -count=1`、`go vet ./...`、`go build ./...`、`go mod verify`。
 
-CI 和 Release 都只 checkout 本仓，在仓库根目录运行所有 Go 命令，GoReleaser 也从根目录构建。OpenTofu provider 依赖的 `github.com/geektr-cloud/openmgcl v0.2.0` 由 Go module proxy 或 module cache 提供，不需要同级 checkout。Release 由 `v*` tag 触发，checkout 该 tag 并从中构建。
+CI 和 Release 都只 checkout 本仓，在仓库根目录运行所有 Go 命令，GoReleaser 也从根目录构建。OpenTofu provider 依赖的 `github.com/geektr-cloud/openmgcl v0.2.1` 由 Go module proxy 或 module cache 提供，不需要同级 checkout。Release 由 `v*` tag 触发，checkout 该 tag 并从中构建。
 
 发布由 `.github/workflows/release.yml` 驱动：推送 `v*` tag 后先运行完整 `go test ./... -count=1` 与 `go vet ./...`，再用 GoReleaser 构建 linux/darwin/windows × amd64/arm64 的 zip、`SHA256SUMS` 和 Registry manifest，创建 GitHub Release。GitHub Release 不会自动把 provider 加入 OpenTofu Registry。
 
 `e2e/` 有两层测试，都会在缺少 `tofu >= 1.11` 或 `-short` 时明确 skip：
 
 - **hermetic e2e**：用 `httptest` 假 API 验证 dev_overrides、plan/apply、空 Secret、function 单 KV 与 wildcard map、public KV 持久化、ephemeral KV 隔离、`mgcl_secret` 返回混合 KV、`mgcl_secret_kv` 创建/更新/替换/drift/destroy、非法 reference 零请求、误用与 filesystem mirror（unpacked 与 packed）init，不依赖 openmgcl 源码。假 API 实现 `secrets:read`、`secret-kvs:write`、`secret-kvs:delete`，按 KV mark 过滤 public 读取，并校验 token。binary plan 文件是 zip+Deflate，泄漏检查会逐 entry 解压后再扫描。
-- **跨仓真实 e2e**：通过 `go list -m` 找到 `go.mod` 中解析的 openmgcl v0.2.0 源码（通常来自 Go module cache），把 `cmd/mgcl` 构建到临时目录，用临时 HOME、临时 0600 Ed25519 key 和临时 SQLite DB 执行 `mgcl secret create/set/list/show/get`，再经 `mgcl run --db ... --encryption-key-file ... -- tofu ...` 跑真实 OpenTofu。覆盖：不含 function 的配置在无 session 时 validate 通过、plan/apply 经真实 API 读取、更新 Secret 后新 run 读到新值、空 Secret、`--public` 后 function 读取单 KV 与 wildcard 并持久化 public 值、ephemeral KV 不可由 function 读、混合 Secret 的 `mgcl_secret` 返回全部 KV、`mgcl_secret_kv` 在同 Secret 创建/更新/替换/删除两个 KV、独立项目读取 resource 写入的 KV、ephemeral 值写入持久化参数被核心拒绝、provider token 跨 session 返回 401、非 loopback 安全门在加载 key/DB/listen 前失败。
+- **跨仓真实 e2e**：通过 `go list -m` 找到 `go.mod` 中解析的 openmgcl v0.2.1 源码（通常来自 Go module cache），把 `cmd/mgcl` 构建到临时目录，用临时 HOME、临时 0600 Ed25519 key 和临时 SQLite DB 执行 `mgcl secret create/set/list/show/get`，再经 `mgcl run --db ... --encryption-key-file ... -- tofu ...` 跑真实 OpenTofu。覆盖：不含 function 的配置在无 session 时 validate 通过、plan/apply 经真实 API 读取、更新 Secret 后新 run 读到新值、空 Secret、`--public` 后 function 读取单 KV 与 wildcard 并持久化 public 值、ephemeral KV 不可由 function 读、混合 Secret 的 `mgcl_secret` 返回全部 KV、`mgcl_secret_kv` 在同 Secret 创建/更新/替换/删除两个 KV、独立项目读取 resource 写入的 KV、ephemeral 值写入持久化参数被核心拒绝、provider token 跨 session 返回 401、非 loopback 安全门在加载 key/DB/listen 前失败。
 
 所有端口由 listener 临时分配。**在 Go 依赖与工具链已缓存的前提下**，tofu/mgcl 运行期不访问外网；冷缓存时 `go build` 仍可能访问 Go module proxy。
 
-跨仓测试只读取 Go module cache 中的 openmgcl v0.2.0 源码，构建产物写入临时目录；不要求同级 checkout，也不写入 module cache。
+跨仓测试只读取 Go module cache 中的 openmgcl v0.2.1 源码，构建产物写入临时目录；不要求同级 checkout，也不写入 module cache。
 
 ### 依赖说明
 
 Provider 通过 `github.com/geektr-cloud/openmgcl/pkg/providerapi` 访问 mgcl provider API（stdlib-only 客户端）。
 
-`require` 固定为 `github.com/geektr-cloud/openmgcl v0.2.0`，没有 `replace`。`ReadPublicSecret`、`WriteSecretKV`、`DeleteSecretKV`、per-KV `ephemeral_marks` 和 `secret set --public` 都包含在这个已发布模块中。本仓可脱离同级 openmgcl 目录独立构建，也支持 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.0`。
+`require` 固定为 `github.com/geektr-cloud/openmgcl v0.2.1`，没有 `replace`。`ReadPublicSecret`、`WriteSecretKV`、`DeleteSecretKV`、per-KV `ephemeral_marks` 和 `secret set --public` 都包含在这个已发布模块中。本仓可脱离同级 openmgcl 目录独立构建，也支持 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.1`。
 
-跨仓真实 e2e 通过 `go list -m` 解析到同一份 openmgcl v0.2.0 源码（通常位于 Go module cache），在临时目录构建 `mgcl` CLI，因此不依赖同级 checkout，也不写入 module cache。
+跨仓真实 e2e 通过 `go list -m` 解析到同一份 openmgcl v0.2.1 源码（通常位于 Go module cache），在临时目录构建 `mgcl` CLI，因此不依赖同级 checkout，也不写入 module cache。
 
 Terraform Plugin Framework 版本见 `go.mod`（v1.19.0）。
