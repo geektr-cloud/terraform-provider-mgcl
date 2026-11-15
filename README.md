@@ -4,7 +4,7 @@ OpenTofu provider，把 [mgcl](https://github.com/geektr-cloud/openmgcl) 中的 
 
 Provider 只提供一个 ephemeral resource：`mgcl_secret`。它不注册普通 resource、data source 或 provider function，因为这些类型的值会进入 plan 或 state。Secret value 只存在于 provider 进程内存中，由 OpenTofu 核心保证不会被写入 plan/state。
 
-> 尚未发布到 OpenTofu Registry，也不是发布就绪状态。当前只能通过 `dev_overrides` 或 filesystem mirror 使用，详见下文。
+> v0.1.0 已通过 GitHub Releases 发布，但尚未发布到 OpenTofu Registry。可从 GitHub Release 下载、用 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.1.0` 安装，或通过 `dev_overrides` / filesystem mirror 使用，详见下文。
 
 ## 要求
 
@@ -13,12 +13,10 @@ Provider 只提供一个 ephemeral resource：`mgcl_secret`。它不注册普通
 - **Go >= 1.27.4**（`go.mod` 的 `go` 指令）。
 - 只支持在 `mgcl run -- <command>` 启动的子进程中运行。常驻 `mgcl run` 不签发 provider token。
 
-> **开发期依赖（重要）**：`go.mod` 当前使用 `replace github.com/geektr-cloud/openmgcl => ../openmgcl`，这是主仓尚未发布阶段的**有意约束**。当前仓库不能脱离同级 `openmgcl` 目录独立构建，也不能用带 `@version` 的 `go install`（`replace` 不随模块分发，远程版本不存在）。正式发布前必须先给 openmgcl 打 tag、把 `require` 固定到真实发布版本并删除 `replace`。在此之前请勿把本仓当作可发布状态。
-
 ## 工作方式
 
 Provider address：`registry.opentofu.org/geektr-cloud/mgcl`
-二进制名：`terraform-provider-mgcl`
+二进制名：`terraform-provider-mgcl`（release zip 内为 `terraform-provider-mgcl_v<version>`，符合 OpenTofu 的版本后缀惯例）
 
 `provider "mgcl" {}` 没有任何 HCL 参数。连接信息只从环境变量读取，token 不允许写入配置文件或 HCL：
 
@@ -81,9 +79,29 @@ provider "aws" {
 
 其他云 provider 的用法相同：从 `values["<key>"]` 取对应凭据。
 
-## 本地安装
+## 安装
 
-### 方式一：dev_overrides（快速开发）
+### 方式一：GitHub Releases
+
+从 [Releases](https://github.com/geektr-cloud/terraform-provider-mgcl/releases) 下载对应平台的 zip：
+
+```text
+terraform-provider-mgcl_<version>_<os>_<arch>.zip
+```
+
+每个 release 同时附带 `terraform-provider-mgcl_<version>_SHA256SUMS` 和 `terraform-provider-mgcl_<version>_manifest.json`。解压后放到 OpenTofu 可读取的位置：`dev_overrides` 目录，或 filesystem mirror 布局（见后文）。
+
+GitHub Release 资产**不会**自动加入 OpenTofu Registry。没有 `dev_overrides` / filesystem mirror 配置时，OpenTofu 无法从 Registry 安装本 provider。
+
+### 方式二：go install
+
+```bash
+go install github.com/geektr-cloud/terraform-provider-mgcl@v0.1.0
+```
+
+二进制安装到 `$(go env GOBIN)`（未设置时为 `$(go env GOPATH)/bin`），文件名为 `terraform-provider-mgcl`。OpenTofu 不会自动发现该路径：把二进制所在目录配置为 `dev_overrides`，或复制到 filesystem mirror 布局后使用。
+
+### 方式三：dev_overrides（快速开发）
 
 `dev_overrides` 让 OpenTofu 直接使用本地二进制，并跳过该 provider 的 `tofu init` 安装与校验。
 
@@ -109,9 +127,9 @@ tofu plan
 
 `dev_overrides` 的路径必须指向**包含 `terraform-provider-mgcl` 二进制的目录**（上面示例的 `bin/`），不是二进制文件本身。
 
-`TF_CLI_CONFIG_FILE` 可选：未设置时 `mgcl run --` 自动继承 `~/.tofurc`；显式设置时以该变量为准，覆盖默认 `~/.tofurc`。`dev_overrides` 会跳过 `tofu init`；需要真正执行 `tofu init` 时改用方式二。
+`TF_CLI_CONFIG_FILE` 可选：未设置时 `mgcl run --` 自动继承 `~/.tofurc`；显式设置时以该变量为准，覆盖默认 `~/.tofurc`。`dev_overrides` 会跳过 `tofu init`；需要真正执行 `tofu init` 时改用方式四。
 
-### 方式二：filesystem mirror（需要 tofu init）
+### 方式四：filesystem mirror（需要 tofu init）
 
 需要走 `tofu init` 的集成场景使用符合 OpenTofu 布局的 filesystem mirror。最小 unpacked 布局：
 
@@ -185,6 +203,10 @@ go build ./...
 go mod verify
 ```
 
+CI（`.github/workflows/ci.yml`）在 push `main`、pull request 和手动触发时运行，矩阵覆盖 OpenTofu `1.11.11` 与 `1.13.9`，执行 gofmt 检查、`go test ./... -count=1`、`go test -race -short ./... -count=1`、`go vet ./...`、`go build ./...`、`go mod verify`。
+
+发布由 `.github/workflows/release.yml` 驱动：推送 `v*` tag 后先运行完整 `go test ./... -count=1` 与 `go vet ./...`，再用 GoReleaser 构建 linux/darwin/windows × amd64/arm64 的 zip、`SHA256SUMS` 和 Registry manifest，创建 GitHub Release。GitHub Release 不会自动把 provider 加入 OpenTofu Registry。
+
 `e2e/` 有两层测试，都会在缺少 `tofu >= 1.11` 或 `-short` 时明确 skip：
 
 - **hermetic e2e**：用 `httptest` 假 API 验证 dev_overrides、plan/apply、空 Secret、误用与 filesystem mirror（unpacked 与 packed）init，不依赖 openmgcl 源码。binary plan 文件是 zip+Deflate，泄漏检查会逐 entry 解压后再扫描。
@@ -198,6 +220,6 @@ go mod verify
 
 Provider 通过 `github.com/geektr-cloud/openmgcl/pkg/providerapi` 访问 mgcl provider API（stdlib-only 客户端）。
 
-当前 `go.mod` 中的 `replace github.com/geektr-cloud/openmgcl => ../openmgcl` 是开发期设置（原因与发布前步骤见文首“开发期依赖”）。因此本仓现在**不能脱离同级 openmgcl 独立构建，也不能用于 `go install ...@version`**。正式发布前必须：给 openmgcl 打 tag、把 `require` 固定到该真实版本、删除 `replace`；未完成这些步骤前不要声称可发布。
+依赖固定为 `github.com/geektr-cloud/openmgcl v0.1.0`，没有 `replace`。本仓可脱离同级 openmgcl 目录独立构建，也支持 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.1.0`。跨仓真实 e2e 从模块缓存读取同一版本的 openmgcl 源码并构建 `mgcl` CLI，不依赖同级工作目录。
 
 Terraform Plugin Framework 版本见 `go.mod`（v1.19.0）。
