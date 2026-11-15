@@ -45,19 +45,20 @@ func (r *secretEphemeralResource) Metadata(_ context.Context, _ ephemeral.Metada
 
 func (r *secretEphemeralResource) Schema(_ context.Context, _ ephemeral.SchemaRequest, resp *ephemeral.SchemaResponse) {
 	resp.Schema = ephemeralschema.Schema{
-		MarkdownDescription: "Reads the current key/value pairs of one mgcl secret as an ephemeral resource. " +
-			"Values exist only in memory during plan and apply: OpenTofu rejects using them where they would be persisted, " +
-			"and the provider never writes them to plan or state.",
+		MarkdownDescription: "Reads every key/value pair of one mgcl Secret as an ephemeral resource, including public " +
+			"and ephemeral KVs. Values exist only in memory during plan and apply: OpenTofu rejects using them where " +
+			"they would be persisted, and the provider never writes them to plan or state. Use " +
+			"`provider::mgcl::secret_value` only for KVs explicitly marked public.",
 		Attributes: map[string]ephemeralschema.Attribute{
 			"name": ephemeralschema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Name of the mgcl secret to read. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`.",
+				MarkdownDescription: "Name of the mgcl Secret to read. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`.",
 			},
 			"values": ephemeralschema.MapAttribute{
 				Computed:            true,
 				Sensitive:           true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "Current key/value pairs of the secret. Empty secrets return an empty map.",
+				MarkdownDescription: "Current key/value pairs of the Secret, including public and ephemeral KVs. Empty Secrets return an empty map.",
 			},
 		},
 	}
@@ -144,7 +145,7 @@ func (r *secretEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 		return
 	}
 
-	if r.providerData == nil || r.providerData.Endpoint == "" {
+	if r.providerData == nil {
 		resp.Diagnostics.AddError(
 			"mgcl provider is not configured",
 			fmt.Sprintf("%[1]s is not set. The mgcl provider only works inside `mgcl run -- <command>`, "+
@@ -154,19 +155,31 @@ func (r *secretEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 		return
 	}
 
-	if r.providerData.Token == "" {
+	endpoint, token := r.providerData.credentials()
+
+	if endpoint == "" {
+		resp.Diagnostics.AddError(
+			"mgcl provider is not configured",
+			fmt.Sprintf("%[1]s is not set. The mgcl provider only works inside `mgcl run -- <command>`, "+
+				"which injects %[1]s and %[2]s into the child process environment.", providerapi.EnvEndpoint, providerapi.EnvToken),
+		)
+
+		return
+	}
+
+	if token == "" {
 		resp.Diagnostics.AddError(
 			"mgcl provider token is missing",
 			fmt.Sprintf("%s is not set. The mgcl provider only works inside `mgcl run -- <command>`, "+
-				"which provides a short-lived read-only provider token.", providerapi.EnvToken),
+				"which provides a short-lived provider token.", providerapi.EnvToken),
 		)
 
 		return
 	}
 
 	client := &providerapi.Client{
-		Endpoint: r.providerData.Endpoint,
-		Token:    r.providerData.Token,
+		Endpoint: endpoint,
+		Token:    token,
 	}
 
 	result, err := client.ReadSecret(ctx, name)
@@ -174,7 +187,7 @@ func (r *secretEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 		resp.Diagnostics.AddError(
 			"Failed to read mgcl secret",
 			fmt.Sprintf("Could not read secret %q from %s: %s",
-				name, r.providerData.Endpoint, redactToken(err.Error(), r.providerData.Token)),
+				name, endpoint, redactToken(err.Error(), token)),
 		)
 
 		return
@@ -191,11 +204,12 @@ func (r *secretEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 
 	if result.Name != name {
 		// Never adopt values from a response for a different secret. Only
-		// names, which mgcl treats as public metadata, appear in the message.
+		// names, which mgcl treats as public metadata, appear in the message;
+		// token redaction is a safety net.
 		resp.Diagnostics.AddError(
 			"Unexpected mgcl secret response",
-			fmt.Sprintf("The provider API returned secret %q while %q was requested; the returned values were discarded.",
-				result.Name, name),
+			redactToken(fmt.Sprintf("The provider API returned secret %q while %q was requested; the returned values were discarded.",
+				result.Name, name), token),
 		)
 
 		return
@@ -223,8 +237,16 @@ func (r *secretEphemeralResource) Close(_ context.Context, _ ephemeral.CloseRequ
 }
 
 func validateSecretName(name string) error {
-	if !secretNamePattern.MatchString(name) {
-		return fmt.Errorf("secret name %q must match %s: 1 to 64 lowercase ASCII letters, digits, '_' or '-', starting with a letter or digit", name, secretNamePattern.String())
+	return validateSecretToken("secret name", name)
+}
+
+func validateSecretKey(key string) error {
+	return validateSecretToken("secret key", key)
+}
+
+func validateSecretToken(label, token string) error {
+	if !secretNamePattern.MatchString(token) {
+		return fmt.Errorf("%s %q must match %s: 1 to 64 lowercase ASCII letters, digits, '_' or '-', starting with a letter or digit", label, token, secretNamePattern.String())
 	}
 
 	return nil

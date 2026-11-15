@@ -177,6 +177,10 @@ func TestE2EPlanAndApplyUseFreshValues(t *testing.T) {
 		if request.name != "bootstrap" {
 			t.Fatalf("provider requested secret %q, want bootstrap", request.name)
 		}
+
+		if request.access != "ephemeral" {
+			t.Fatalf("provider request access = %q, want ephemeral", request.access)
+		}
 	}
 
 	requireFileContent(t, filepath.Join(work, "access_key_id.txt"), "AKIAE2E-NEW")

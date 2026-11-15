@@ -1,5 +1,8 @@
-// terraform-provider-mgcl exposes mgcl bootstrap secrets to OpenTofu as an
-// ephemeral resource so values never enter plan or state.
+// terraform-provider-mgcl exposes mgcl bootstrap secrets to OpenTofu. The
+// mgcl_secret ephemeral resource keeps every KV out of plan and state; the
+// provider::mgcl::secret_value function reads public KVs and returns ordinary
+// data that OpenTofu may persist; the mgcl_secret_kv managed resource writes
+// one KV and always stores its value in plan and state.
 package main
 
 import (
@@ -13,7 +16,7 @@ import (
 )
 
 // version is overridden at build time with
-// -ldflags "-X main.version=0.1.0".
+// -ldflags "-X main.version=0.2.0".
 var version = "dev"
 
 func main() {

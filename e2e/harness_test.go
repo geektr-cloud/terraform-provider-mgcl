@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/geektr-cloud/openmgcl/pkg/providerapi"
 )
 
 // minTofuMinor is the first OpenTofu minor release with ephemeral resources.
@@ -24,7 +26,7 @@ const minTofuMinor = 11
 
 // providerVersion is the version the e2e binary reports. The filesystem mirror
 // layout and the built binary must agree.
-const providerVersion = "0.1.0"
+const providerVersion = "0.2.0"
 
 var (
 	moduleRoot = findModuleRoot()
@@ -368,60 +370,84 @@ func runCommand(t *testing.T, label, binary, dir string, env []string, args ...s
 	return tofuResult{stdout: stdout.String(), stderr: stderr.String(), err: err}
 }
 
-// fakeProviderAPI implements the mgcl provider API (POST
-// /api/mgcl/v1/secrets:read) for e2e tests. It records requests and serves the
-// configured values, failing closed on a wrong bearer token.
+// fakeProviderAPI implements the mgcl provider API used by e2e tests:
+// secrets:read, secret-kvs:write and secret-kvs:delete. It records requests and
+// fails closed on a wrong bearer token.
 type fakeProviderAPI struct {
 	server *httptest.Server
 
 	mu       sync.Mutex
-	values   map[string]string
+	secrets  map[string]*fakeSecret
 	token    string
 	requests []apiRequest
+}
+
+type fakeSecret struct {
+	values map[string]string
+	marks  map[string]bool // true = ephemeral
 }
 
 type apiRequest struct {
 	method string
 	path   string
 	token  string
+	access string
 	name   string
+	key    string
 }
 
 func newFakeProviderAPI(t *testing.T, token string) *fakeProviderAPI {
 	t.Helper()
 
 	api := &fakeProviderAPI{
-		values: map[string]string{"access_key_id": "AKIAE2E", "secret_access_key": "e2e-s3cr3t-value"},
-		token:  token,
+		secrets: map[string]*fakeSecret{
+			"bootstrap": {
+				values: map[string]string{"access_key_id": "AKIAE2E", "secret_access_key": "e2e-s3cr3t-value"},
+				marks:  map[string]bool{"access_key_id": true, "secret_access_key": true},
+			},
+		},
+		token: token,
 	}
 
 	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, _ := io.ReadAll(req.Body)
 
-		var payload struct {
-			Name string `json:"name"`
-		}
-		_ = json.Unmarshal(body, &payload)
+		var readPayload providerapi.ReadSecretRequest
+		_ = json.Unmarshal(body, &readPayload)
 
-		api.mu.Lock()
-		api.requests = append(api.requests, apiRequest{
+		request := apiRequest{
 			method: req.Method,
 			path:   req.URL.Path,
 			token:  strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "),
-			name:   payload.Name,
-		})
-		values := api.values
+		}
+
+		switch req.URL.Path {
+		case providerapi.SecretsReadPath:
+			request.access = readPayload.Access
+			request.name = readPayload.Name
+		case providerapi.SecretKVsWritePath:
+			var payload providerapi.WriteSecretKVRequest
+			_ = json.Unmarshal(body, &payload)
+			request.key = payload.Key
+			if name, _, ok := splitFakeReference(payload.Key); ok {
+				request.name = name
+			}
+		case providerapi.SecretKVsDeletePath:
+			var payload providerapi.DeleteSecretKVRequest
+			_ = json.Unmarshal(body, &payload)
+			request.key = payload.Key
+			if name, _, ok := splitFakeReference(payload.Key); ok {
+				request.name = name
+			}
+		}
+
+		api.mu.Lock()
+		api.requests = append(api.requests, request)
 		expectedToken := api.token
 		api.mu.Unlock()
 
 		w.Header().Set("Cache-Control", "no-store")
-
-		if req.Method != http.MethodPost || req.URL.Path != "/api/mgcl/v1/secrets:read" {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":"not found"}`)
-
-			return
-		}
+		w.Header().Set("Content-Type", "application/json")
 
 		if strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ") != expectedToken {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -430,26 +456,201 @@ func newFakeProviderAPI(t *testing.T, token string) *fakeProviderAPI {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"name":   payload.Name,
-			"values": values,
-		})
+		switch req.URL.Path {
+		case providerapi.SecretsReadPath:
+			api.handleRead(w, readPayload)
+		case providerapi.SecretKVsWritePath:
+			api.handleWrite(w, body)
+		case providerapi.SecretKVsDeletePath:
+			api.handleDelete(w, body)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":"not found"}`)
+		}
 	}))
 	t.Cleanup(api.server.Close)
 
 	return api
 }
 
-func (a *fakeProviderAPI) url() string {
-	return a.server.URL
+func (a *fakeProviderAPI) handleRead(w http.ResponseWriter, payload providerapi.ReadSecretRequest) {
+	access := payload.Access
+	if access == "" {
+		access = providerapi.SecretAccessEphemeral
+	}
+
+	values := map[string]string{}
+	marks := map[string]bool{}
+
+	a.mu.Lock()
+	secret := a.secrets[payload.Name]
+	if secret != nil {
+		for key, value := range secret.values {
+			mark, ok := secret.marks[key]
+			if !ok {
+				mark = true
+			}
+
+			if access == providerapi.SecretAccessPublic && mark {
+				continue
+			}
+
+			values[key] = value
+			marks[key] = mark
+		}
+	}
+	a.mu.Unlock()
+
+	if secret == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"secret not found"}`)
+
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"name":            payload.Name,
+		"values":          values,
+		"ephemeral_marks": marks,
+	})
 }
 
+func (a *fakeProviderAPI) handleWrite(w http.ResponseWriter, body []byte) {
+	var payload providerapi.WriteSecretKVRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid JSON body"}`)
+
+		return
+	}
+
+	name, key, ok := splitFakeReference(payload.Key)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid secret reference"}`)
+
+		return
+	}
+
+	a.mu.Lock()
+	secret := a.secrets[name]
+	if secret == nil {
+		secret = &fakeSecret{values: map[string]string{}, marks: map[string]bool{}}
+		a.secrets[name] = secret
+	}
+	mark := true
+	if payload.IsEphemeral != nil {
+		mark = *payload.IsEphemeral
+	}
+
+	secret.values[key] = payload.Value
+	secret.marks[key] = mark
+	a.mu.Unlock()
+
+	_ = json.NewEncoder(w).Encode(providerapi.WriteSecretKVResponse{
+		Name:        name,
+		Key:         key,
+		IsEphemeral: mark,
+	})
+}
+
+func (a *fakeProviderAPI) handleDelete(w http.ResponseWriter, body []byte) {
+	var payload providerapi.DeleteSecretKVRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid JSON body"}`)
+
+		return
+	}
+
+	name, key, ok := splitFakeReference(payload.Key)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid secret reference"}`)
+
+		return
+	}
+
+	a.mu.Lock()
+	if secret := a.secrets[name]; secret != nil {
+		delete(secret.values, key)
+		delete(secret.marks, key)
+	}
+	a.mu.Unlock()
+
+	_ = json.NewEncoder(w).Encode(providerapi.DeleteSecretKVResponse{Name: name, Key: key})
+}
+
+func splitFakeReference(reference string) (string, string, bool) {
+	if strings.Count(reference, "/") != 1 {
+		return "", "", false
+	}
+
+	name, key, _ := strings.Cut(reference, "/")
+	if !fakeSecretNamePattern.MatchString(name) || !fakeSecretNamePattern.MatchString(key) {
+		return "", "", false
+	}
+
+	return name, key, true
+}
+
+var fakeSecretNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// setValues replaces the values of the default "bootstrap" Secret and marks
+// every KV ephemeral.
 func (a *fakeProviderAPI) setValues(values map[string]string) {
+	marks := make(map[string]bool, len(values))
+	for key := range values {
+		marks[key] = true
+	}
+
+	a.setSecret("bootstrap", values, marks)
+}
+
+// setSecret replaces one Secret's values and marks. true marks a KV ephemeral;
+// false marks it public.
+func (a *fakeProviderAPI) setSecret(name string, values map[string]string, marks map[string]bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.values = values
+	a.secrets[name] = &fakeSecret{
+		values: cloneStringMap(values),
+		marks:  cloneBoolMap(marks),
+	}
+}
+
+func (a *fakeProviderAPI) secretValues(name string) (map[string]string, map[string]bool, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	secret, ok := a.secrets[name]
+	if !ok {
+		return nil, nil, false
+	}
+
+	return cloneStringMap(secret.values), cloneBoolMap(secret.marks), true
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+
+	return out
+}
+
+func cloneBoolMap(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+
+	return out
+}
+
+func (a *fakeProviderAPI) url() string {
+	return a.server.URL
 }
 
 func (a *fakeProviderAPI) requestCount() int {

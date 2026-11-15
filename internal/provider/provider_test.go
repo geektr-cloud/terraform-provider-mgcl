@@ -6,7 +6,9 @@ import (
 
 	"github.com/geektr-cloud/openmgcl/pkg/providerapi"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
 func TestProviderMetadata(t *testing.T) {
@@ -43,19 +45,45 @@ func TestProviderSchemaHasNoAttributes(t *testing.T) {
 	}
 }
 
-func TestProviderRegistersOnlySecretEphemeralResource(t *testing.T) {
+func TestProviderRegistersEphemeralResourceFunctionAndManagedResource(t *testing.T) {
 	p := New("dev")()
 
-	if resources := p.Resources(context.Background()); resources != nil {
-		t.Fatalf("provider registers managed resources, want none")
+	resources := p.Resources(context.Background())
+	if len(resources) != 1 {
+		t.Fatalf("managed resources = %d, want 1", len(resources))
+	}
+
+	managed := resources[0]()
+	if _, ok := managed.(*secretKVResource); !ok {
+		t.Fatalf("managed resource type = %T, want *secretKVResource", managed)
+	}
+
+	var managedMetadata resource.MetadataResponse
+	managed.Metadata(context.Background(), resource.MetadataRequest{}, &managedMetadata)
+
+	if managedMetadata.TypeName != "mgcl_secret_kv" {
+		t.Fatalf("managed resource name = %q, want mgcl_secret_kv", managedMetadata.TypeName)
 	}
 
 	if dataSources := p.DataSources(context.Background()); dataSources != nil {
 		t.Fatalf("provider registers data sources, want none")
 	}
 
-	if functions := p.(provider.ProviderWithFunctions).Functions(context.Background()); functions != nil {
-		t.Fatalf("provider registers functions, want none")
+	functions := p.(provider.ProviderWithFunctions).Functions(context.Background())
+	if len(functions) != 1 {
+		t.Fatalf("functions = %d, want 1", len(functions))
+	}
+
+	f := functions[0]()
+	if _, ok := f.(*secretValueFunction); !ok {
+		t.Fatalf("function type = %T, want *secretValueFunction", f)
+	}
+
+	var metadata function.MetadataResponse
+	f.Metadata(context.Background(), function.MetadataRequest{}, &metadata)
+
+	if metadata.Name != "secret_value" {
+		t.Fatalf("function name = %q, want secret_value", metadata.Name)
 	}
 
 	ephemerals := p.(provider.ProviderWithEphemeralResources).EphemeralResources(context.Background())
@@ -94,6 +122,10 @@ func TestProviderConfigureReadsEnvironmentWithoutNetwork(t *testing.T) {
 	if data.Token != "test-token" {
 		t.Fatalf("Token = %q, want token from environment", data.Token)
 	}
+
+	if resp.ResourceData != resp.EphemeralResourceData {
+		t.Fatal("resource data and ephemeral resource data differ")
+	}
 }
 
 func TestProviderConfigureAllowsMissingEnvironment(t *testing.T) {
@@ -116,6 +148,10 @@ func TestProviderConfigureAllowsMissingEnvironment(t *testing.T) {
 
 	if data.Endpoint != "" || data.Token != "" {
 		t.Fatalf("provider data = %+v, want empty endpoint and token", data)
+	}
+
+	if resp.ResourceData != resp.EphemeralResourceData {
+		t.Fatal("resource data and ephemeral resource data differ")
 	}
 }
 
