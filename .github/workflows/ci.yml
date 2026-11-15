@@ -36,6 +36,7 @@ jobs:
       - uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: ${{ matrix.tofu }}
+          tofu_wrapper: false
 
       - name: Check gofmt
         run: |

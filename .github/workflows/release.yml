@@ -28,6 +28,7 @@ jobs:
       - uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: "1.13.9"
+          tofu_wrapper: false
 
       - name: Test
         run: go test ./... -count=1
