@@ -24,3 +24,6 @@ dev.tfrc
 *.test
 *.out
 coverage.html
+
+# GoReleaser output
+/dist/
