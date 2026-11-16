@@ -191,6 +191,7 @@ func TestSecretKVResourceValidateConfig(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid", key: types.StringValue("app-config/region")},
+		{name: "hierarchical name", key: types.StringValue("aws-605592676484-cn/scarborough/region")},
 		{name: "no slash", key: types.StringValue("not-a-reference"), wantErr: true},
 		{name: "wildcard", key: types.StringValue("app-config/*"), wantErr: true},
 		{name: "uppercase", key: types.StringValue("App/region"), wantErr: true},
@@ -326,7 +327,7 @@ func TestSecretKVResourceCreateRejectsInvalidKeyWithoutRequest(t *testing.T) {
 	r := newTestSecretKVResource(newProviderData(api.url(), "token"))
 	sch := resourceSchema(t)
 
-	for _, key := range []string{"app-config", "app-config/*", "a/b/c", "Bootstrap/a", "app-config/Key", ""} {
+	for _, key := range []string{"app-config", "app-config/*", "app-config/", "/key", "app-config//key", "Bootstrap/a", "app-config/Key", ""} {
 		resp, _ := createSecretKV(t, r, sch, types.StringValue(key), types.StringValue("v"), types.BoolValue(true))
 		if !resp.Diagnostics.HasError() {
 			t.Fatalf("key %q: expected an error", key)

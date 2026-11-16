@@ -149,7 +149,7 @@ func TestE2ESecretValueFunctionInvalidReference(t *testing.T) {
 
 	writeFile(t, work, "main.tf", providerBlock+`
 resource "terraform_data" "invalid" {
-  input = provider::mgcl::secret_value("a/b/c")
+  input = provider::mgcl::secret_value("a//b")
 }
 `)
 

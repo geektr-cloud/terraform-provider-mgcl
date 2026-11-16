@@ -21,17 +21,19 @@ type secretReference struct {
 	AllKeys bool
 }
 
-// parseSecretReference parses exactly <secret-name>/<key> or
-// <secret-name>/*. Other formats, multiple slashes, invalid names and invalid
-// keys are rejected before any request is made.
+// parseSecretReference parses <secret-name>/<key> or <secret-name>/*, splitting
+// at the last slash. Secret names may contain multiple slash-separated
+// segments; the key is always the final, single segment. Invalid names and keys
+// are rejected before any request is made.
 func parseSecretReference(reference string) (secretReference, error) {
-	if strings.Count(reference, "/") != 1 {
+	index := strings.LastIndex(reference, "/")
+	if index < 0 {
 		return secretReference{}, fmt.Errorf(
 			"secret reference %q must be <secret-name>/<key> or <secret-name>/*", reference,
 		)
 	}
 
-	name, key, _ := strings.Cut(reference, "/")
+	name, key := reference[:index], reference[index+1:]
 	if err := validateSecretName(name); err != nil {
 		return secretReference{}, err
 	}
@@ -69,13 +71,16 @@ func (f *secretValueFunction) Definition(_ context.Context, _ function.Definitio
 		Summary: "Read one public KV, or every public KV, from an mgcl secret.",
 		Description: "Reads public KVs through the mgcl provider API. " +
 			"<secret-name>/<key> returns a string; <secret-name>/* returns a map of every public KV. " +
+			"Secret names may contain /-separated segments; the key is the final single segment. " +
 			"The result is ordinary, non-sensitive data: OpenTofu may persist it in plan files, state and logs. " +
 			"Do not use this function for ephemeral KVs; use the mgcl_secret ephemeral resource instead. " +
 			"Public KVs are still encrypted at rest in mgcl.db, but the function result is not secret.",
 		MarkdownDescription: "Reads public KVs from an mgcl Secret through the `mgcl run` provider API.\n\n" +
 			"- `provider::mgcl::secret_value(\"app-config/region\")` returns the string value of one public KV.\n" +
-			"- `provider::mgcl::secret_value(\"app-config/*\")` returns a `map(string)` of every public KV in that Secret. " +
-			"An empty public set returns an empty map.\n\n" +
+			"- `provider::mgcl::secret_value(\"team/app-config/*\")` returns a `map(string)` of every public KV in that " +
+			"Secret. An empty public set returns an empty map.\n\n" +
+			"Secret names may contain multiple `/`-separated segments; the reference is split at the last `/` and the " +
+			"key is always a single segment without `/`.\n\n" +
 			"> **Warning:** the result is normal, non-sensitive data. OpenTofu can persist it in plan files, state and " +
 			"> logs. Use this function only for KVs explicitly marked public with " +
 			"> `mgcl secret set <name>/<key> --public`. For ephemeral KVs, use the `mgcl_secret` ephemeral resource.\n\n" +
@@ -84,7 +89,7 @@ func (f *secretValueFunction) Definition(_ context.Context, _ function.Definitio
 		Parameters: []function.Parameter{
 			function.StringParameter{
 				Name:                "reference",
-				MarkdownDescription: "`<secret-name>/<key>` for one public KV, or `<secret-name>/*` for all public KVs. Names and keys must match `^[a-z0-9][a-z0-9_-]{0,63}$`.",
+				MarkdownDescription: "`<secret-name>/<key>` for one public KV, or `<secret-name>/*` for all public KVs. The name is one or more `/`-separated segments, each matching `^[a-z0-9][a-z0-9_-]{0,63}$`, with at most 64 bytes; the key is one such segment.",
 			},
 		},
 		Return: function.DynamicReturn{},

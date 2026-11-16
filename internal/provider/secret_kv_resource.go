@@ -45,7 +45,9 @@ func (r *secretKVResource) Metadata(_ context.Context, _ resource.MetadataReques
 func (r *secretKVResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = resourceschema.Schema{
 		MarkdownDescription: "Writes one KV into an mgcl Secret. The Secret is created atomically by the provider API " +
-			"when it does not exist. The value is always stored in plan and state; `Sensitive` only hides it from CLI " +
+			"when it does not exist. Each KV must be owned by only one resource or managed `mgcl_secret`; different " +
+			"resources may manage disjoint keys of the same Secret, but overlapping ownership is unsupported. The " +
+			"value is always stored in plan and state; `Sensitive` only hides it from CLI " +
 			"output. Changing `key` replaces the resource; changing `value` or `ephemeral_mark` updates the same KV in place.\n\n" +
 			"> **Warning:** do not read the same KV through `provider::mgcl::secret_value` or `mgcl_secret` in the same " +
 			"> OpenTofu project that manages it with `mgcl_secret_kv`. The mgcl provider does not promise idempotence or " +
@@ -53,8 +55,10 @@ func (r *secretKVResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 		Attributes: map[string]resourceschema.Attribute{
 			"key": resourceschema.StringAttribute{
 				Required: true,
-				MarkdownDescription: "KV reference in the form `<secret-name>/<key>`. Both parts must match " +
-					"`^[a-z0-9][a-z0-9_-]{0,63}$`. Changing this attribute replaces the resource.",
+				MarkdownDescription: "KV reference in the form `<secret-name>/<key>`, split at the last `/`. " +
+					"`<secret-name>` is one or more `/`-separated segments, each matching " +
+					"`^[a-z0-9][a-z0-9_-]{0,63}$`, with a total length of at most 64 bytes; `<key>` is one " +
+					"segment matching the same pattern and cannot contain `/`. Changing this attribute replaces the resource.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

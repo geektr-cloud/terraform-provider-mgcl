@@ -3,6 +3,8 @@
 // The provider exposes:
 //   - the mgcl_secret ephemeral resource, which reads every KV of a Secret
 //     without persisting values;
+//   - the mgcl_secret managed resource, which owns a set of KVs in one Secret
+//     and persists their values in plan and state;
 //   - the provider::mgcl::secret_value function, which reads public KVs and
 //     returns ordinary string or map data;
 //   - the mgcl_secret_kv managed resource, which writes one KV and persists
@@ -113,6 +115,8 @@ func (p *mgclProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 			"The `mgcl_secret` ephemeral resource keeps values out of plan and state. " +
 			"The `provider::mgcl::secret_value` function reads only KVs marked public; its result is ordinary " +
 			"string or map data that OpenTofu may persist in plan, state and logs. " +
+			"The `mgcl_secret` managed resource owns a set of KVs in one Secret; their values are always stored in " +
+			"plan and state, and `Sensitive` only hides them from CLI output. " +
 			"The `mgcl_secret_kv` managed resource writes one KV; its value is always stored in plan and state, " +
 			"and `Sensitive` only hides it from CLI output.",
 		Attributes: map[string]providerschema.Attribute{},
@@ -161,6 +165,7 @@ func (p *mgclProvider) providerData() *providerData {
 
 func (p *mgclProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
+		NewSecretResource,
 		NewSecretKVResource,
 	}
 }

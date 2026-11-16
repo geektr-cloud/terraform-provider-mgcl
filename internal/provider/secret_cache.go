@@ -73,10 +73,10 @@ func validatePublicRead(secret string, values map[string]string, marks map[strin
 // misses for the same Secret are serialized, which guarantees that only one
 // request is made. Different Secrets also serialize while they are fetched.
 //
-// Deliberately no cache invalidation is triggered by mgcl_secret_kv writes:
-// the provider does not promise that a read after a write in the same OpenTofu
-// project observes the new value. Use separate projects for writing and
-// reading, as documented.
+// Deliberately no cache invalidation is triggered by mgcl_secret_kv or managed
+// mgcl_secret writes: the provider does not promise that a read after a write
+// in the same OpenTofu project observes the new value. Use separate projects
+// for writing and reading, as documented.
 func (d *providerData) readPublicValues(ctx context.Context, name string) (map[string]string, error) {
 	d.cacheMu.Lock()
 	defer d.cacheMu.Unlock()

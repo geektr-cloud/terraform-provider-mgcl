@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -143,6 +144,56 @@ func TestSecretValueFunctionReadsPublicValue(t *testing.T) {
 
 	if call.access != providerapi.SecretAccessPublic {
 		t.Fatalf("access = %q, want public", call.access)
+	}
+}
+
+func TestSecretValueFunctionReadsHierarchicalSecret(t *testing.T) {
+	const name = "aws-605592676484-cn/scarborough"
+
+	api := newFakeProviderAPI(t)
+	api.setSecret(name,
+		map[string]string{"account_id": "1234", "secret_key": "s"},
+		map[string]bool{"account_id": false, "secret_key": true},
+	)
+
+	f := newTestSecretValueFunction(api, "test-token-xyz")
+
+	resp := runSecretValue(t, f, types.StringValue(name+"/account_id"))
+	if resp.Error != nil {
+		t.Fatalf("function run failed: %s", resp.Error.Text)
+	}
+
+	if got := resultString(t, resp); got != "1234" {
+		t.Fatalf("result = %q, want 1234", got)
+	}
+
+	wildcard := runSecretValue(t, f, types.StringValue(name+"/*"))
+	if wildcard.Error != nil {
+		t.Fatalf("wildcard run failed: %s", wildcard.Error.Text)
+	}
+
+	result, ok := resultAttr(wildcard).(types.Map)
+	if !ok {
+		t.Fatalf("wildcard result type = %T, want map", resultAttr(wildcard))
+	}
+
+	values := mapValue(t, result)
+	if len(values) != 1 || values["account_id"] != "1234" {
+		t.Fatalf("wildcard values = %v, want only the public account_id", values)
+	}
+
+	calls := api.calls()
+	if len(calls) != 1 {
+		t.Fatalf("API calls = %d, want 1 shared public read", len(calls))
+	}
+
+	var payload providerapi.ReadSecretRequest
+	if err := json.Unmarshal(calls[0].body, &payload); err != nil {
+		t.Fatalf("decoding request: %v", err)
+	}
+
+	if payload.Name != name {
+		t.Fatalf("request name = %q, want %q", payload.Name, name)
 	}
 }
 
@@ -417,7 +468,8 @@ func TestSecretValueFunctionInvalidReferencesMakeNoRequest(t *testing.T) {
 		{name: "unknown", reference: types.StringUnknown(), want: "must be known"},
 		{name: "empty", reference: types.StringValue(""), want: "Invalid secret reference"},
 		{name: "no slash", reference: types.StringValue("bootstrap"), want: "Invalid secret reference"},
-		{name: "two slashes", reference: types.StringValue("a/b/c"), want: "Invalid secret reference"},
+		{name: "trailing slash", reference: types.StringValue("a/b/"), want: "Invalid secret reference"},
+		{name: "empty segment", reference: types.StringValue("a//b"), want: "Invalid secret reference"},
 		{name: "uppercase name", reference: types.StringValue("Bootstrap/a"), want: "Invalid secret reference"},
 		{name: "uppercase key", reference: types.StringValue("bootstrap/Key"), want: "Invalid secret reference"},
 		{name: "empty key", reference: types.StringValue("bootstrap/"), want: "Invalid secret reference"},

@@ -3,7 +3,7 @@ module github.com/geektr-cloud/terraform-provider-mgcl
 go 1.27.4
 
 require (
-	github.com/geektr-cloud/openmgcl v0.2.1
+	github.com/geektr-cloud/openmgcl v0.2.2
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	golang.org/x/crypto v0.55.0
 )

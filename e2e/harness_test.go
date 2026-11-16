@@ -26,7 +26,7 @@ const minTofuMinor = 11
 
 // providerVersion is the version the e2e binary reports. The filesystem mirror
 // layout and the built binary must agree.
-const providerVersion = "0.2.1"
+const providerVersion = "0.2.2"
 
 var (
 	moduleRoot = findModuleRoot()
@@ -371,8 +371,9 @@ func runCommand(t *testing.T, label, binary, dir string, env []string, args ...s
 }
 
 // fakeProviderAPI implements the mgcl provider API used by e2e tests:
-// secrets:read, secret-kvs:write and secret-kvs:delete. It records requests and
-// fails closed on a wrong bearer token.
+// secrets:read, secret-kvs:write, secret-kvs:write-batch and
+// secret-kvs:delete. It records requests and fails closed on a wrong bearer
+// token.
 type fakeProviderAPI struct {
 	server *httptest.Server
 
@@ -394,6 +395,7 @@ type apiRequest struct {
 	access string
 	name   string
 	key    string
+	body   []byte
 }
 
 func newFakeProviderAPI(t *testing.T, token string) *fakeProviderAPI {
@@ -419,6 +421,7 @@ func newFakeProviderAPI(t *testing.T, token string) *fakeProviderAPI {
 			method: req.Method,
 			path:   req.URL.Path,
 			token:  strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "),
+			body:   body,
 		}
 
 		switch req.URL.Path {
@@ -439,6 +442,10 @@ func newFakeProviderAPI(t *testing.T, token string) *fakeProviderAPI {
 			if name, _, ok := splitFakeReference(payload.Key); ok {
 				request.name = name
 			}
+		case providerapi.SecretKVsWriteBatchPath:
+			var payload providerapi.WriteSecretKVsRequest
+			_ = json.Unmarshal(body, &payload)
+			request.name = payload.Name
 		}
 
 		api.mu.Lock()
@@ -463,6 +470,8 @@ func newFakeProviderAPI(t *testing.T, token string) *fakeProviderAPI {
 			api.handleWrite(w, body)
 		case providerapi.SecretKVsDeletePath:
 			api.handleDelete(w, body)
+		case providerapi.SecretKVsWriteBatchPath:
+			api.handleWriteBatch(w, body)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"error":"not found"}`)
@@ -581,17 +590,113 @@ func (a *fakeProviderAPI) handleDelete(w http.ResponseWriter, body []byte) {
 	_ = json.NewEncoder(w).Encode(providerapi.DeleteSecretKVResponse{Name: name, Key: key})
 }
 
+func (a *fakeProviderAPI) handleWriteBatch(w http.ResponseWriter, body []byte) {
+	var payload providerapi.WriteSecretKVsRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid JSON body"}`)
+
+		return
+	}
+
+	if !validFakeSecretName(payload.Name) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid secret name"}`)
+
+		return
+	}
+
+	for _, kv := range payload.KVs {
+		if !validFakeSecretKey(kv.Key) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"invalid secret key"}`)
+
+			return
+		}
+	}
+
+	a.mu.Lock()
+
+	secret := a.secrets[payload.Name]
+	if secret == nil {
+		if !payload.Ensure && len(payload.KVs) == 0 {
+			a.mu.Unlock()
+
+			_ = json.NewEncoder(w).Encode(providerapi.WriteSecretKVsResponse{
+				Name: payload.Name,
+				KVs:  []providerapi.SecretKVWriteMetadata{},
+			})
+
+			return
+		}
+
+		secret = &fakeSecret{values: map[string]string{}, marks: map[string]bool{}}
+		a.secrets[payload.Name] = secret
+	}
+
+	for _, key := range payload.DeleteKeys {
+		delete(secret.values, key)
+		delete(secret.marks, key)
+	}
+
+	metadata := make([]providerapi.SecretKVWriteMetadata, 0, len(payload.KVs))
+
+	for _, kv := range payload.KVs {
+		mark := true
+		if kv.IsEphemeral != nil {
+			mark = *kv.IsEphemeral
+		}
+
+		secret.values[kv.Key] = kv.Value
+		secret.marks[kv.Key] = mark
+
+		metadata = append(metadata, providerapi.SecretKVWriteMetadata{
+			Key:         kv.Key,
+			IsEphemeral: mark,
+		})
+	}
+
+	a.mu.Unlock()
+
+	_ = json.NewEncoder(w).Encode(providerapi.WriteSecretKVsResponse{
+		Name: payload.Name,
+		KVs:  metadata,
+	})
+}
+
 func splitFakeReference(reference string) (string, string, bool) {
-	if strings.Count(reference, "/") != 1 {
+	index := strings.LastIndex(reference, "/")
+	if index < 0 {
 		return "", "", false
 	}
 
-	name, key, _ := strings.Cut(reference, "/")
-	if !fakeSecretNamePattern.MatchString(name) || !fakeSecretNamePattern.MatchString(key) {
+	name, key := reference[:index], reference[index+1:]
+	if !validFakeSecretName(name) || !validFakeSecretKey(key) {
 		return "", "", false
 	}
 
 	return name, key, true
+}
+
+// validFakeSecretName mirrors the hierarchical Secret name grammar: one or
+// more slash-separated segments, each matching the v1 segment pattern, with a
+// total length of at most 64 bytes.
+func validFakeSecretName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+
+	for _, segment := range strings.Split(name, "/") {
+		if !fakeSecretNamePattern.MatchString(segment) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func validFakeSecretKey(key string) bool {
+	return fakeSecretNamePattern.MatchString(key)
 }
 
 var fakeSecretNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)

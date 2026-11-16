@@ -75,7 +75,12 @@ func TestSecretEphemeralResourceValidateConfig(t *testing.T) {
 		{name: "leading dash", value: types.StringValue("-bootstrap"), wantErr: true},
 		{name: "leading underscore", value: types.StringValue("_bootstrap"), wantErr: true},
 		{name: "space", value: types.StringValue("boot strap"), wantErr: true},
-		{name: "slash", value: types.StringValue("a/b"), wantErr: true},
+		{name: "hierarchical", value: types.StringValue("aws-605592676484-cn/scarborough")},
+		{name: "deep hierarchical", value: types.StringValue("a/b/c")},
+		{name: "trailing slash", value: types.StringValue("a/"), wantErr: true},
+		{name: "empty segment", value: types.StringValue("a//b"), wantErr: true},
+		{name: "leading slash", value: types.StringValue("/a"), wantErr: true},
+		{name: "total length over 64", value: types.StringValue(strings.Repeat("a", 63) + "/b"), wantErr: true},
 		{name: "empty", value: types.StringValue(""), wantErr: true},
 		{name: "too long", value: types.StringValue(strings.Repeat("a", 65)), wantErr: true},
 		{name: "null skipped", value: types.StringNull()},
@@ -159,6 +164,35 @@ func TestSecretEphemeralResourceOpenReadsSecret(t *testing.T) {
 
 	if body.Name != "bootstrap" {
 		t.Fatalf("request body name = %q, want bootstrap", body.Name)
+	}
+}
+
+func TestSecretEphemeralResourceOpenReadsHierarchicalSecret(t *testing.T) {
+	const name = "aws-605592676484-cn/scarborough"
+
+	api := newFakeProviderAPI(t)
+	api.setSecret(name,
+		map[string]string{"account_id": "1234", "secret_key": "s"},
+		map[string]bool{"account_id": false, "secret_key": true},
+	)
+
+	r := newTestResource(&providerData{Endpoint: api.url(), Token: "test-token-xyz"})
+	sch := secretSchema(t)
+
+	resp := openSecret(t, r, secretConfig(t, sch, types.StringValue(name)))
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	data := openModel(t, resp)
+
+	got := map[string]string{}
+	if diags := data.Values.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("decoding values: %v", diags.Errors())
+	}
+
+	if len(got) != 2 || got["account_id"] != "1234" || got["secret_key"] != "s" {
+		t.Fatalf("values = %v, want every KV of the hierarchical Secret", got)
 	}
 }
 
@@ -468,6 +502,10 @@ type fakeProviderAPI struct {
 	writeMark    *bool
 	writeKey     *string
 	rawRead      *fakeReadResponse
+	batchName    *string
+	batchMarks   map[string]bool
+	batchKeys    map[string]string
+	batchDrops   map[string]bool
 	status       int
 	body         string
 }
@@ -545,6 +583,8 @@ func newFakeProviderAPI(t *testing.T) *fakeProviderAPI {
 			api.handleWrite(w, body)
 		case providerapi.SecretKVsDeletePath:
 			api.handleDelete(w, body)
+		case providerapi.SecretKVsWriteBatchPath:
+			api.handleWriteBatch(w, body)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"error":"not found"}`)
@@ -686,13 +726,98 @@ func (a *fakeProviderAPI) handleDelete(w http.ResponseWriter, body []byte) {
 	_ = json.NewEncoder(w).Encode(providerapi.DeleteSecretKVResponse{Name: name, Key: key})
 }
 
+// handleWriteBatch implements secret-kvs:write-batch: one atomic request that
+// applies upserts and idempotent deletes to one Secret. It creates the Secret
+// only when Ensure is set or at least one KV is upserted, so a delete-only
+// request against a missing Secret succeeds without creating it.
+func (a *fakeProviderAPI) handleWriteBatch(w http.ResponseWriter, body []byte) {
+	var payload providerapi.WriteSecretKVsRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		a.t.Errorf("decoding batch write request: %v", err)
+	}
+
+	if err := validateSecretName(payload.Name); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid secret name"}`)
+
+		return
+	}
+
+	a.mu.Lock()
+
+	secret := a.secrets[payload.Name]
+	if secret == nil {
+		if !payload.Ensure && len(payload.KVs) == 0 {
+			a.mu.Unlock()
+
+			_ = json.NewEncoder(w).Encode(providerapi.WriteSecretKVsResponse{
+				Name: payload.Name,
+				KVs:  []providerapi.SecretKVWriteMetadata{},
+			})
+
+			return
+		}
+
+		secret = &fakeSecret{values: map[string]string{}, marks: map[string]bool{}}
+		a.secrets[payload.Name] = secret
+	}
+
+	for _, key := range payload.DeleteKeys {
+		delete(secret.values, key)
+		delete(secret.marks, key)
+	}
+
+	metadata := make([]providerapi.SecretKVWriteMetadata, 0, len(payload.KVs))
+	responseName := payload.Name
+	if a.batchName != nil {
+		responseName = *a.batchName
+	}
+
+	for _, kv := range payload.KVs {
+		mark := true
+		if kv.IsEphemeral != nil {
+			mark = *kv.IsEphemeral
+		}
+
+		secret.values[kv.Key] = kv.Value
+		secret.marks[kv.Key] = mark
+
+		responseKey := kv.Key
+		if override, ok := a.batchKeys[kv.Key]; ok {
+			responseKey = override
+		}
+
+		responseMark := mark
+		if override, ok := a.batchMarks[kv.Key]; ok {
+			responseMark = override
+		}
+
+		if a.batchDrops[kv.Key] {
+			continue
+		}
+
+		metadata = append(metadata, providerapi.SecretKVWriteMetadata{
+			Key:         responseKey,
+			IsEphemeral: responseMark,
+		})
+	}
+
+	a.mu.Unlock()
+
+	_ = json.NewEncoder(w).Encode(providerapi.WriteSecretKVsResponse{
+		Name: responseName,
+		KVs:  metadata,
+	})
+}
+
 func splitFakeReference(reference string) (string, string, bool) {
-	if strings.Count(reference, "/") != 1 {
+	index := strings.LastIndex(reference, "/")
+	if index < 0 {
 		return "", "", false
 	}
 
-	name, key, _ := strings.Cut(reference, "/")
-	if !secretNamePattern.MatchString(name) || !secretNamePattern.MatchString(key) {
+	name, key := reference[:index], reference[index+1:]
+	if validateSecretName(name) != nil || validateSecretKey(key) != nil {
 		return "", "", false
 	}
 
@@ -758,6 +883,46 @@ func (a *fakeProviderAPI) setWriteKey(key string) {
 	defer a.mu.Unlock()
 
 	a.writeKey = &key
+}
+
+func (a *fakeProviderAPI) setBatchResponseName(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.batchName = &name
+}
+
+func (a *fakeProviderAPI) setBatchMark(key string, mark bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.batchMarks == nil {
+		a.batchMarks = map[string]bool{}
+	}
+
+	a.batchMarks[key] = mark
+}
+
+func (a *fakeProviderAPI) setBatchKey(key, responseKey string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.batchKeys == nil {
+		a.batchKeys = map[string]string{}
+	}
+
+	a.batchKeys[key] = responseKey
+}
+
+func (a *fakeProviderAPI) setBatchDropKey(key string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.batchDrops == nil {
+		a.batchDrops = map[string]bool{}
+	}
+
+	a.batchDrops[key] = true
 }
 
 func (a *fakeProviderAPI) setRawRead(values map[string]string, marks map[string]bool) {

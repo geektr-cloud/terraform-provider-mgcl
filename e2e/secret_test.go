@@ -211,9 +211,9 @@ func TestE2EPlanAndApplyUseFreshValues(t *testing.T) {
 	}
 }
 
-// TestE2EMisuseAsManagedResource verifies that mgcl_secret is not registered as
-// a managed resource.
-func TestE2EMisuseAsManagedResource(t *testing.T) {
+// TestE2EManagedSecretRequiresContents verifies the managed mgcl_secret schema:
+// contents is required and omitting it fails before any provider request.
+func TestE2EManagedSecretRequiresContents(t *testing.T) {
 	tofu := requireTofu(t)
 	binDir := buildProvider(t, "dev")
 
@@ -235,17 +235,12 @@ resource "mgcl_secret" "bootstrap" {
 	res := runTofu(t, tofu, work, env, "plan", "-no-color", "-input=false")
 	res.requireFailure(t, "plan")
 
-	output := res.output()
-	if !strings.Contains(output, "mgcl_secret") {
-		t.Fatalf("failure output does not mention mgcl_secret:\n%s", output)
-	}
-
-	if !strings.Contains(output, "Invalid resource type") && !strings.Contains(output, "resource type") {
-		t.Fatalf("failure output does not explain the invalid resource type:\n%s", output)
+	if output := strings.Join(strings.Fields(res.output()), " "); !strings.Contains(output, `The argument "contents" is required`) {
+		t.Fatalf("failure output does not explain the missing contents argument:\n%s", res.output())
 	}
 
 	if count := api.requestCount(); count != 0 {
-		t.Fatalf("misuse made %d provider API requests, want 0", count)
+		t.Fatalf("invalid configuration made %d provider API requests, want 0", count)
 	}
 }
 

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -13,9 +14,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// secretNamePattern mirrors the mgcl secret name and KV key grammar. Names are
-// validated here so a typo fails before any HTTP request is made.
-var secretNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// secretNameSegmentPattern mirrors one segment of the mgcl Secret name and the
+// KV key grammar. Names are validated here so a typo fails before any HTTP
+// request is made.
+var secretNameSegmentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// maxSecretNameBytes is the maximum length of a full Secret name, including
+// its separating slashes.
+const maxSecretNameBytes = 64
 
 // NewSecretEphemeralResource returns the mgcl_secret ephemeral resource.
 func NewSecretEphemeralResource() ephemeral.EphemeralResource {
@@ -52,7 +58,7 @@ func (r *secretEphemeralResource) Schema(_ context.Context, _ ephemeral.SchemaRe
 		Attributes: map[string]ephemeralschema.Attribute{
 			"name": ephemeralschema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Name of the mgcl Secret to read. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`.",
+				MarkdownDescription: "Name of the mgcl Secret to read. One or more `/`-separated segments, each matching `^[a-z0-9][a-z0-9_-]{0,63}$`, with a total length of at most 64 bytes including slashes.",
 			},
 			"values": ephemeralschema.MapAttribute{
 				Computed:            true,
@@ -236,17 +242,34 @@ func (r *secretEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 func (r *secretEphemeralResource) Close(_ context.Context, _ ephemeral.CloseRequest, _ *ephemeral.CloseResponse) {
 }
 
+// validateSecretName accepts a hierarchical Secret name: one or more
+// slash-separated segments, each matching the v1 segment grammar, with a total
+// length of at most 64 bytes including the slashes.
 func validateSecretName(name string) error {
-	return validateSecretToken("secret name", name)
+	if name == "" {
+		return errors.New("secret name must not be empty")
+	}
+
+	if len(name) > maxSecretNameBytes {
+		return fmt.Errorf("secret name %q must be at most %d bytes including slashes", name, maxSecretNameBytes)
+	}
+
+	for _, segment := range strings.Split(name, "/") {
+		if !secretNameSegmentPattern.MatchString(segment) {
+			return fmt.Errorf("secret name %q has segment %q that must match %s: 1 to 64 lowercase ASCII letters, digits, '_' or '-', starting with a letter or digit",
+				name, segment, secretNameSegmentPattern.String())
+		}
+	}
+
+	return nil
 }
 
+// validateSecretKey accepts one KV key. Keys are always a single segment and
+// never contain a slash, even when the owning Secret name is hierarchical.
 func validateSecretKey(key string) error {
-	return validateSecretToken("secret key", key)
-}
-
-func validateSecretToken(label, token string) error {
-	if !secretNamePattern.MatchString(token) {
-		return fmt.Errorf("%s %q must match %s: 1 to 64 lowercase ASCII letters, digits, '_' or '-', starting with a letter or digit", label, token, secretNamePattern.String())
+	if !secretNameSegmentPattern.MatchString(key) {
+		return fmt.Errorf("secret key %q must match %s: a single segment of 1 to 64 lowercase ASCII letters, digits, '_' or '-', starting with a letter or digit; keys cannot contain '/'",
+			key, secretNameSegmentPattern.String())
 	}
 
 	return nil

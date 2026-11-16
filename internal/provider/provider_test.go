@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/geektr-cloud/openmgcl/pkg/providerapi"
@@ -49,20 +50,27 @@ func TestProviderRegistersEphemeralResourceFunctionAndManagedResource(t *testing
 	p := New("dev")()
 
 	resources := p.Resources(context.Background())
-	if len(resources) != 1 {
-		t.Fatalf("managed resources = %d, want 1", len(resources))
+	if len(resources) != 2 {
+		t.Fatalf("managed resources = %d, want 2", len(resources))
 	}
 
-	managed := resources[0]()
-	if _, ok := managed.(*secretKVResource); !ok {
-		t.Fatalf("managed resource type = %T, want *secretKVResource", managed)
+	managedTypes := map[string]string{}
+
+	for _, factory := range resources {
+		managed := factory()
+
+		var metadata resource.MetadataResponse
+		managed.Metadata(context.Background(), resource.MetadataRequest{}, &metadata)
+
+		managedTypes[fmt.Sprintf("%T", managed)] = metadata.TypeName
 	}
 
-	var managedMetadata resource.MetadataResponse
-	managed.Metadata(context.Background(), resource.MetadataRequest{}, &managedMetadata)
+	if got := managedTypes["*provider.secretResource"]; got != "mgcl_secret" {
+		t.Fatalf("managed resource *secretResource name = %q, want mgcl_secret", got)
+	}
 
-	if managedMetadata.TypeName != "mgcl_secret_kv" {
-		t.Fatalf("managed resource name = %q, want mgcl_secret_kv", managedMetadata.TypeName)
+	if got := managedTypes["*provider.secretKVResource"]; got != "mgcl_secret_kv" {
+		t.Fatalf("managed resource *secretKVResource name = %q, want mgcl_secret_kv", got)
 	}
 
 	if dataSources := p.DataSources(context.Background()); dataSources != nil {
