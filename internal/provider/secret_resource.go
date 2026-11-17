@@ -85,8 +85,7 @@ func (r *secretResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 		Attributes: map[string]resourceschema.Attribute{
 			"name": resourceschema.StringAttribute{
 				Required: true,
-				MarkdownDescription: "Name of the Secret. One or more `/`-separated segments, each matching " +
-					"`^[a-z0-9][a-z0-9_-]{0,63}$`, with a total length of at most 64 bytes including slashes. " +
+				MarkdownDescription: "Name of the Secret. " + secretNameSchemaDescription + " " +
 					"Changing this attribute replaces the resource.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -94,8 +93,8 @@ func (r *secretResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"contents": resourceschema.MapNestedAttribute{
 				Required: true,
-				MarkdownDescription: "KVs owned by this resource. The map key is the bare KV key; it must be a single " +
-					"segment matching `^[a-z0-9][a-z0-9_-]{0,63}$` and cannot contain `/`. An empty map is allowed; " +
+				MarkdownDescription: "KVs owned by this resource. The map key is the bare KV key. " +
+					secretKeySchemaDescription + " An empty map is allowed; " +
 					"`null` is not. Removing a key from the map deletes that KV but leaves the Secret in place.",
 				NestedObject: resourceschema.NestedAttributeObject{
 					Attributes: map[string]resourceschema.Attribute{

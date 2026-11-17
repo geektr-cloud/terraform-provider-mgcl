@@ -197,6 +197,37 @@ func TestSecretValueFunctionReadsHierarchicalSecret(t *testing.T) {
 	}
 }
 
+func TestSecretValueFunctionReadsPathEscapeStableReference(t *testing.T) {
+	const name = "net.sxxfuture.infra"
+
+	api := newFakeProviderAPI(t)
+	api.setSecret(name,
+		map[string]string{"Region.Name": "us-east-1", "API-Key": "s3cr3t"},
+		map[string]bool{"Region.Name": false, "API-Key": true},
+	)
+
+	f := newTestSecretValueFunction(api, "test-token-xyz")
+
+	resp := runSecretValue(t, f, types.StringValue(name+"/Region.Name"))
+	if resp.Error != nil {
+		t.Fatalf("function run failed: %s", resp.Error.Text)
+	}
+
+	if got := resultString(t, resp); got != "us-east-1" {
+		t.Fatalf("result = %q, want us-east-1", got)
+	}
+
+	wildcard := runSecretValue(t, f, types.StringValue(name+"/*"))
+	if wildcard.Error != nil {
+		t.Fatalf("wildcard run failed: %s", wildcard.Error.Text)
+	}
+
+	values := resultMap(t, wildcard)
+	if len(values) != 1 || values["Region.Name"] != "us-east-1" {
+		t.Fatalf("wildcard values = %v, want only the public Region.Name", values)
+	}
+}
+
 func TestSecretValueFunctionReadsWildcardMap(t *testing.T) {
 	api := newFakeProviderAPI(t)
 	api.setSecret("app-config",
@@ -470,8 +501,11 @@ func TestSecretValueFunctionInvalidReferencesMakeNoRequest(t *testing.T) {
 		{name: "no slash", reference: types.StringValue("bootstrap"), want: "Invalid secret reference"},
 		{name: "trailing slash", reference: types.StringValue("a/b/"), want: "Invalid secret reference"},
 		{name: "empty segment", reference: types.StringValue("a//b"), want: "Invalid secret reference"},
-		{name: "uppercase name", reference: types.StringValue("Bootstrap/a"), want: "Invalid secret reference"},
-		{name: "uppercase key", reference: types.StringValue("bootstrap/Key"), want: "Invalid secret reference"},
+		{name: "space in name", reference: types.StringValue("Boot strap/a"), want: "Invalid secret reference"},
+		{name: "percent in name", reference: types.StringValue("boot%strap/a"), want: "Invalid secret reference"},
+		{name: "hash in name", reference: types.StringValue("boot#strap/a"), want: "Invalid secret reference"},
+		{name: "unicode name", reference: types.StringValue("团队/a"), want: "Invalid secret reference"},
+		{name: "space in key", reference: types.StringValue("bootstrap/Bad Key"), want: "Invalid secret reference"},
 		{name: "empty key", reference: types.StringValue("bootstrap/"), want: "Invalid secret reference"},
 		{name: "empty name", reference: types.StringValue("/a"), want: "Invalid secret reference"},
 		{name: "wildcard name", reference: types.StringValue("*/a"), want: "Invalid secret reference"},

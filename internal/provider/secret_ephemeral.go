@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
+	"net/url"
 	"strings"
 
 	"github.com/geektr-cloud/openmgcl/pkg/providerapi"
@@ -14,14 +14,24 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// secretNameSegmentPattern mirrors one segment of the mgcl Secret name and the
-// KV key grammar. Names are validated here so a typo fails before any HTTP
-// request is made.
-var secretNameSegmentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+const (
+	// maxSecretNameBytes is the maximum length of a full Secret name,
+	// including its separating slashes.
+	maxSecretNameBytes = 64
+	// maxSecretKeyBytes is the maximum length of one KV key.
+	maxSecretKeyBytes = 64
+)
 
-// maxSecretNameBytes is the maximum length of a full Secret name, including
-// its separating slashes.
-const maxSecretNameBytes = 64
+// secretNameSchemaDescription is the shared schema wording for Secret names.
+const secretNameSchemaDescription = "One or more `/`-separated non-empty segments; each segment must equal its " +
+	"`url.PathEscape` form, and the whole name is at most 64 bytes including slashes. Uppercase letters, `.`, `..`, " +
+	"leading `-` or `_`, and other path-safe characters are allowed; characters that `url.PathEscape` encodes " +
+	"(for example spaces, `%`, `?`, `#`, and non-ASCII) are not."
+
+// secretKeySchemaDescription is the shared schema wording for KV keys.
+const secretKeySchemaDescription = "A bare KV key: non-empty, at most 64 bytes, and equal to its `url.PathEscape` " +
+	"form, so it cannot contain `/`. Uppercase letters, `.`, `..`, leading `-` or `_`, and other path-safe characters " +
+	"are allowed; characters that `url.PathEscape` encodes (for example spaces, `%`, `?`, `#`, and non-ASCII) are not."
 
 // NewSecretEphemeralResource returns the mgcl_secret ephemeral resource.
 func NewSecretEphemeralResource() ephemeral.EphemeralResource {
@@ -58,7 +68,7 @@ func (r *secretEphemeralResource) Schema(_ context.Context, _ ephemeral.SchemaRe
 		Attributes: map[string]ephemeralschema.Attribute{
 			"name": ephemeralschema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Name of the mgcl Secret to read. One or more `/`-separated segments, each matching `^[a-z0-9][a-z0-9_-]{0,63}$`, with a total length of at most 64 bytes including slashes.",
+				MarkdownDescription: "Name of the mgcl Secret to read. " + secretNameSchemaDescription,
 			},
 			"values": ephemeralschema.MapAttribute{
 				Computed:            true,
@@ -242,9 +252,10 @@ func (r *secretEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 func (r *secretEphemeralResource) Close(_ context.Context, _ ephemeral.CloseRequest, _ *ephemeral.CloseResponse) {
 }
 
-// validateSecretName accepts a hierarchical Secret name: one or more
-// slash-separated segments, each matching the v1 segment grammar, with a total
-// length of at most 64 bytes including the slashes.
+// validateSecretName accepts a hierarchical Secret name: one or more non-empty
+// slash-separated segments, each unchanged by url.PathEscape, with a total
+// length of at most 64 bytes including the slashes. This is the same grammar
+// the mgcl store enforces, so a typo fails before any HTTP request is made.
 func validateSecretName(name string) error {
 	if name == "" {
 		return errors.New("secret name must not be empty")
@@ -255,21 +266,34 @@ func validateSecretName(name string) error {
 	}
 
 	for _, segment := range strings.Split(name, "/") {
-		if !secretNameSegmentPattern.MatchString(segment) {
-			return fmt.Errorf("secret name %q has segment %q that must match %s: 1 to 64 lowercase ASCII letters, digits, '_' or '-', starting with a letter or digit",
-				name, segment, secretNameSegmentPattern.String())
+		if segment == "" {
+			return fmt.Errorf("secret name %q has an empty segment; every slash-separated segment must be non-empty", name)
+		}
+
+		if segment != url.PathEscape(segment) {
+			return fmt.Errorf("secret name %q has segment %q that is not URL path safe: every segment must equal its url.PathEscape form, so '/', spaces, '%%', '?', '#', and non-ASCII characters are not allowed",
+				name, segment)
 		}
 	}
 
 	return nil
 }
 
-// validateSecretKey accepts one KV key. Keys are always a single segment and
-// never contain a slash, even when the owning Secret name is hierarchical.
+// validateSecretKey accepts one KV key. Keys are always a single non-empty
+// segment of at most 64 bytes that is unchanged by url.PathEscape, so no key
+// can contain a slash, even when the owning Secret name is hierarchical.
 func validateSecretKey(key string) error {
-	if !secretNameSegmentPattern.MatchString(key) {
-		return fmt.Errorf("secret key %q must match %s: a single segment of 1 to 64 lowercase ASCII letters, digits, '_' or '-', starting with a letter or digit; keys cannot contain '/'",
-			key, secretNameSegmentPattern.String())
+	if key == "" {
+		return errors.New("secret key must not be empty")
+	}
+
+	if len(key) > maxSecretKeyBytes {
+		return fmt.Errorf("secret key %q must be at most %d bytes", key, maxSecretKeyBytes)
+	}
+
+	if key != url.PathEscape(key) {
+		return fmt.Errorf("secret key %q must equal its url.PathEscape form; keys cannot contain '/' or other characters that url.PathEscape would encode, such as spaces, '%%', '?', '#', or non-ASCII",
+			key)
 	}
 
 	return nil

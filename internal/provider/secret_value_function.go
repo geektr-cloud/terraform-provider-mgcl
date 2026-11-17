@@ -88,8 +88,9 @@ func (f *secretValueFunction) Definition(_ context.Context, _ function.Definitio
 			"once OpenTofu has evaluated it.",
 		Parameters: []function.Parameter{
 			function.StringParameter{
-				Name:                "reference",
-				MarkdownDescription: "`<secret-name>/<key>` for one public KV, or `<secret-name>/*` for all public KVs. The name is one or more `/`-separated segments, each matching `^[a-z0-9][a-z0-9_-]{0,63}$`, with at most 64 bytes; the key is one such segment.",
+				Name: "reference",
+				MarkdownDescription: "`<secret-name>/<key>` for one public KV, or `<secret-name>/*` for all public KVs. The name is " +
+					secretNameSchemaDescription + " The key is " + secretKeySchemaDescription,
 			},
 		},
 		Return: function.DynamicReturn{},

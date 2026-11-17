@@ -56,9 +56,8 @@ func (r *secretKVResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"key": resourceschema.StringAttribute{
 				Required: true,
 				MarkdownDescription: "KV reference in the form `<secret-name>/<key>`, split at the last `/`. " +
-					"`<secret-name>` is one or more `/`-separated segments, each matching " +
-					"`^[a-z0-9][a-z0-9_-]{0,63}$`, with a total length of at most 64 bytes; `<key>` is one " +
-					"segment matching the same pattern and cannot contain `/`. Changing this attribute replaces the resource.",
+					"`<secret-name>` is " + secretNameSchemaDescription + " `<key>` is " +
+					secretKeySchemaDescription + " Changing this attribute replaces the resource.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

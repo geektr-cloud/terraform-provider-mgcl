@@ -11,7 +11,7 @@ OpenTofu provider，把 [mgcl](https://github.com/geektr-cloud/openmgcl) 中的 
 
 Provider 不注册 data source。
 
-> v0.2.2 已通过 GitHub Releases 发布，但尚未发布到 OpenTofu Registry。可从 GitHub Release 下载、用 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.2` 安装，或通过 `dev_overrides` / filesystem mirror 使用，详见下文。v0.1.0 仅包含 `mgcl_secret` ephemeral resource；`mgcl_secret_kv` 和单参数 dynamic `provider::mgcl::secret_value` 从 v0.2.0 开始提供；managed `mgcl_secret`（含批量 API 与分层 Secret name）从 v0.2.2 开始提供。
+> v0.2.3 已通过 GitHub Releases 发布，但尚未发布到 OpenTofu Registry。可从 GitHub Release 下载、用 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.3` 安装，或通过 `dev_overrides` / filesystem mirror 使用，详见下文。v0.1.0 仅包含 `mgcl_secret` ephemeral resource；`mgcl_secret_kv` 和单参数 dynamic `provider::mgcl::secret_value` 从 v0.2.0 开始提供；managed `mgcl_secret`（含批量 API 与分层 Secret name）从 v0.2.2 开始提供；Secret name segment 与 KV key 的 PathEscape 校验从 v0.2.3 开始提供。
 
 > **public 不等于明文存储。** public KV 仍在 `mgcl.db` 中加密保存，读取仍需私钥和 provider token；但 function 结果一旦被 OpenTofu 求值，就是普通数据，可能被写进 plan 文件、state、output 和日志。不要把真正的机密 KV 标记为 public。
 
@@ -52,9 +52,9 @@ Provider token 是短期令牌，只能访问 provider API：读取 KV、写入 
 
 ### Secret 名称、KV key 与引用
 
-- **Secret name 可以分层**：一个或多个 `/` 分隔的 segment，每段匹配 `^[a-z0-9][a-z0-9_-]{0,63}$`，整串长度（含 `/`）不超过 64 字节。例如 `aws-605592676484-cn/scarborough` 合法。
-- **KV key 永远是单个 segment**：匹配同一 pattern，不能包含 `/`。分层只属于 Secret name。
-- **`<secret-name>/<key>` 引用按最后一个 `/` 切分**：`provider::mgcl::secret_value`、`mgcl_secret_kv.key` 都遵循该规则；function 的 wildcard 写作 `<secret-name>/*`。
+- **Secret name 可以分层**：一个或多个 `/` 分隔的非空 segment；每段必须满足 `segment == url.PathEscape(segment)`，整串长度（含 `/`）不超过 64 字节。大小写、`.`、`..`、前导 `-`/`_` 和其他 PathEscape-stable 字符都合法，例如 `net.sxxfuture.infra` 和 `aws-605592676484-cn/scarborough`；会被 `url.PathEscape` 编码的字符（例如空格、`%`、`?`、`#` 和非 ASCII）非法。
+- **KV key 是单个 segment**：非空、最多 64 字节且 `key == url.PathEscape(key)`，因此不能包含 `/`；大小写、`.` 和其他 PathEscape-stable 字符合法，会被 `url.PathEscape` 编码的字符非法。分层只属于 Secret name。
+- **`<secret-name>/<key>` 引用按最后一个 `/` 切分**：`provider::mgcl::secret_value`、`mgcl_secret_kv.key` 都遵循该规则；function 的 wildcard 写作 `<secret-name>/*`。`url.PathEscape("*") == "%2A"`，因此 `*` 不会成为合法的 name segment 或 KV key，不会与 wildcard 冲突。
 - managed `mgcl_secret` 的 `name` 使用完整 Secret name；`contents` 的 map key 是裸 KV key，不能再带 Secret name 或 `/`。
 - ephemeral `mgcl_secret` 的 `name` 同样接受分层名称。
 
@@ -120,7 +120,7 @@ resource "terraform_data" "app_config" {
 - `<secret-name>/<key>`：该 KV 必须 public，返回 `string`。
 - `<secret-name>/*`：返回该 Secret 的全部 public KV，类型 `map(string)`；没有 public KV 时返回非 nil 空 map。
 
-`reference` 按最后一个 `/` 切分：Secret name 可以包含多个 `/` segment（每段匹配 `^[a-z0-9][a-z0-9_-]{0,63}$`，整串不超过 64 字节），key 永远是最后一个单 segment。其他格式、空 segment、非法 name/key 在请求前报错。ephemeral KV 不在 public 集合中，单 KV 形式读取会报 `was not found among the public KVs`。
+`reference` 按最后一个 `/` 切分：Secret name 可以包含多个 `/` segment（每段非空且满足 `segment == url.PathEscape(segment)`，整串不超过 64 字节），key 是最后一个非空 segment（最多 64 字节且 `key == url.PathEscape(key)`，因此不含 `/`）。大小写、`.`、`..`、前导 `-`/`_` 等 PathEscape-stable 字符合法；会被 `url.PathEscape` 编码的字符（例如空格、`%`、`?`、`#` 和非 ASCII）、空 segment/key 和 wildcard name 在请求前报错。ephemeral KV 不在 public 集合中，单 KV 形式读取会报 `was not found among the public KVs`。
 
 **函数结果不是 sensitive/ephemeral，OpenTofu 会像普通数据一样持久化它。** 适用于可公开或可落盘的非机密配置；真正的机密继续使用 `mgcl_secret` ephemeral resource。
 
@@ -144,7 +144,7 @@ resource "mgcl_secret" "scarborough_cred" {
 ```
 
 - `name`：required，完整 Secret name，可以包含多个 `/` segment；整串不超过 64 字节。修改 `name` 会替换资源。
-- `contents`：required `MapNestedAttribute`；map key 是裸 KV key（单 segment，不能含 `/`），value 是包含 `value` 和 `ephemeral_mark` 的对象。允许空 map `{}`（确保 Secret 存在但没有 KV），不允许 `null`。
+- `contents`：required `MapNestedAttribute`；map key 是裸 KV key（单个非空 segment，最多 64 字节且 `key == url.PathEscape(key)`，不能含 `/`），value 是包含 `value` 和 `ephemeral_mark` 的对象。允许空 map `{}`（确保 Secret 存在但没有 KV），不允许 `null`。
 - entry `value`：required string，`Sensitive: true`，但仍完整进入 plan/state；空字符串允许，`null` 拒绝。validate 阶段跳过 unknown，Create/Update 要求 name、所有 key 和 value 已知。
 - entry `ephemeral_mark`：optional bool，默认 `true`。`true` 的 KV 不能被 `provider::mgcl::secret_value` 读取；ephemeral `mgcl_secret` 会返回它。
 - Create/Update 把整个 `contents` 和需要删除的旧 key 合并为**一次原子** `secret-kvs:write-batch` 请求；Create 的 `delete_keys` 为空。Secret 不存在时由服务端连同 DEK 原子创建。只拥有 `contents` 中的 key：远端额外 KV 不动，删除时也不动。
@@ -191,7 +191,7 @@ GitHub Release 资产**不会**自动加入 OpenTofu Registry。没有 `dev_over
 ### 方式二：go install
 
 ```bash
-go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.2
+go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.3
 ```
 
 二进制安装到 `$(go env GOBIN)`（未设置时为 `$(go env GOPATH)/bin`），文件名为 `terraform-provider-mgcl`。OpenTofu 不会自动发现该路径：把二进制所在目录配置为 `dev_overrides`，或复制到 filesystem mirror 布局后使用。
@@ -229,7 +229,7 @@ tofu plan
 需要走 `tofu init` 的集成场景使用符合 OpenTofu 布局的 filesystem mirror。最小 unpacked 布局：
 
 ```text
-/opt/tofu-mirror/registry.opentofu.org/geektr-cloud/mgcl/0.2.2/linux_amd64/terraform-provider-mgcl_v0.2.2
+/opt/tofu-mirror/registry.opentofu.org/geektr-cloud/mgcl/0.2.3/linux_amd64/terraform-provider-mgcl_v0.2.3
 ```
 
 ```hcl
@@ -253,12 +253,12 @@ tofu init
 
 与 `dev_overrides` 不同，filesystem mirror 支持真实 `tofu init`。`mgcl run --` 未设置 `TF_CLI_CONFIG_FILE` 时同样继承 `~/.tofurc`；显式设置时覆盖默认文件。
 
-也支持 packed 布局：`.../mgcl/terraform-provider-mgcl_0.2.2_linux_amd64.zip`。
+也支持 packed 布局：`.../mgcl/terraform-provider-mgcl_0.2.3_linux_amd64.zip`。
 
 ## 行为与保证
 
 - `provider "mgcl" {}` 无必填参数。`Configure` 只读环境变量，不访问网络，并把同一份 provider data 交给 ephemeral resource、managed resource 和 provider function。**不含 `provider::mgcl::secret_value` 的配置**在缺少 endpoint/token 时也能通过 `tofu validate`：validate 只检查 schema 与本地格式，不出网；第一次 Open 或 resource 操作才报缺少配置。**含 `provider::mgcl::secret_value` 的配置**在 validate 阶段就会求值 function，因此需要真实的 provider session（`mgcl run --` 注入的 endpoint/token），否则 validate 直接报未配置。OpenTofu 可能在 `Configure` 之前求值 provider function，此时函数直接从环境变量初始化，不发网络请求。
-- `mgcl_secret` ephemeral 的 `name` 为必填 string：一个或多个 `/` segment，每段匹配 `^[a-z0-9][a-z0-9_-]{0,63}$`，整串不超过 64 字节。`tofu validate` 在 name 已知时检查语法，unknown 时跳过；Open 对 null 返回 `Secret name is required`，对 unknown 返回 `Secret name must be known`。
+- `mgcl_secret` ephemeral 的 `name` 为必填 string：一个或多个非空 `/` segment，每段满足 `segment == url.PathEscape(segment)`，整串不超过 64 字节；大小写、`.`、`..`、前导 `-`/`_` 等 PathEscape-stable 字符合法。`tofu validate` 在 name 已知时检查语法，unknown 时跳过；Open 对 null 返回 `Secret name is required`，对 unknown 返回 `Secret name must be known`。
 - managed `mgcl_secret` 的 `name` 规则与 ephemeral 相同且变更触发 replace；`contents` required，空 map 合法、null 拒绝；每个 entry 的 `value` required 且 sensitive，`ephemeral_mark` optional+computed、默认 true。`contents` key 必须是单 segment（不能含 `/`）。validate 跳过 unknown；Create/Update 要求 name、key、value 均 known，null value 拒绝，空 value 允许。
 - `provider::mgcl::secret_value` 的 `reference` 为 required string。null、unknown、非法格式在请求前报错。
 - `mgcl_secret_kv` 的 `key` 为 required string，plan 阶段校验；`value` required；`ephemeral_mark` 默认 true。key 变更触发 replace，value/mark 变更原地 update。
@@ -281,10 +281,10 @@ tofu init
 | `MGCL_PROVIDER_TOKEN is not set` | 同上；常驻 `mgcl run` 不签发 token |
 | `Secret name is required` | `mgcl_secret.name` 为 null |
 | `Secret name must be known` | name 依赖 plan 时未知的表达式；改为已知字面量或 plan 期间可知的值 |
-| `Invalid secret name` | name 不是合法的分层 Secret name：空、某 segment 不符合 `^[a-z0-9][a-z0-9_-]{0,63}$`，或整串超过 64 字节 |
+| `Invalid secret name` | name 不是合法的分层 Secret name：空、含空 segment、某 segment 不等于 `url.PathEscape(segment)`（例如含空格、`%`、`?`、`#` 或非 ASCII），或整串超过 64 字节 |
 | `Invalid secret reference` | function 参数不是 `<secret-name>/<key>` 或 `<secret-name>/*`，或分层 name/单段 key 非法 |
 | `Invalid secret KV reference` | `mgcl_secret_kv.key` 按最后一个 `/` 切分后 name/key 非法，或使用了 wildcard |
-| `Invalid secret key` | managed `mgcl_secret.contents` 的 map key 不是单 segment（含 `/` 或非法字符） |
+| `Invalid secret key` | managed `mgcl_secret.contents` 的 map key 为空、超过 64 字节或 `key != url.PathEscape(key)`（含 `/`、空格、`%`、`?`、`#` 或非 ASCII） |
 | `Secret contents are required` | managed `mgcl_secret.contents` 为 null；空 map 请写 `{}` |
 | `Secret contents must be known` | `contents` 依赖 plan/apply 期间未知的表达式 |
 | `Secret value must not be null` | 某个 entry 的 `value = null`；空值请用 `""` |
@@ -330,7 +330,7 @@ go mod tidy -diff
 
 CI（`.github/workflows/ci.yml`）在 push `main`、pull request 和手动触发时运行，矩阵覆盖 OpenTofu `1.11.11` 与 `1.13.9`，执行 gofmt 检查、`go test ./... -count=1`、`go test -race -short ./... -count=1`、`go vet ./...`、`go build ./...`、`go mod verify`。
 
-CI 和 Release 都只 checkout 本仓，在仓库根目录运行所有 Go 命令，GoReleaser 也从根目录构建。OpenTofu provider 依赖的 `github.com/geektr-cloud/openmgcl v0.2.2` 由 Go module proxy 或 module cache 提供，不需要同级 checkout。Release 由 `v*` tag 触发，checkout 该 tag 并从中构建。
+CI 和 Release 都只 checkout 本仓，在仓库根目录运行所有 Go 命令，GoReleaser 也从根目录构建。OpenTofu provider 依赖的 `github.com/geektr-cloud/openmgcl v0.2.3` 由 Go module proxy 或 module cache 提供，不需要同级 checkout。Release 由 `v*` tag 触发，checkout 该 tag 并从中构建。
 
 发布由 `.github/workflows/release.yml` 驱动：推送 `v*` tag 后先运行完整 `go test ./... -count=1` 与 `go vet ./...`，再用 GoReleaser 构建 linux/darwin/windows × amd64/arm64 的 zip、`SHA256SUMS` 和 Registry manifest，创建 GitHub Release。GitHub Release 不会自动把 provider 加入 OpenTofu Registry。
 
@@ -347,7 +347,7 @@ CI 和 Release 都只 checkout 本仓，在仓库根目录运行所有 Go 命令
 
 Provider 通过 `github.com/geektr-cloud/openmgcl/pkg/providerapi` 访问 mgcl provider API（stdlib-only 客户端）。
 
-`require` 固定为 `github.com/geektr-cloud/openmgcl v0.2.2`，没有 `replace`。`ReadPublicSecret`、`WriteSecretKV`、`WriteSecretKVs`、`DeleteSecretKV`、per-KV `ephemeral_marks`、`secret-kvs:write-batch`、分层 Secret name 和 `ValidSecretKey` 都包含在这个已发布模块中。本仓可脱离同级 openmgcl 目录独立构建，也支持 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.2`。
+`require` 固定为 `github.com/geektr-cloud/openmgcl v0.2.3`，没有 `replace`。`ReadPublicSecret`、`WriteSecretKV`、`WriteSecretKVs`、`DeleteSecretKV`、per-KV `ephemeral_marks`、`secret-kvs:write-batch`、分层 Secret name 和 PathEscape-stable Secret name/KV key 校验都包含在这个已发布模块中。本仓可脱离同级 openmgcl 目录独立构建，也支持 `go install github.com/geektr-cloud/terraform-provider-mgcl@v0.2.3`。
 
 跨仓真实 e2e 通过 `go list -m` 解析到同一份 openmgcl 源码（通常来自 Go module cache）。测试在临时目录构建 `mgcl` CLI，不写入源码目录或 module cache。
 

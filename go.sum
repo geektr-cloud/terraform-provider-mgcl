@@ -9,8 +9,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8Yc
 github.com/fatih/color v1.13.0/go.mod h1:kLAiJbzzSOZDVNGyDpeOxJ47H46qBXwg5ILebYFFOfk=
 github.com/fatih/color v1.18.0 h1:S8gINlzdQ840/4pfAwic/ZE0djQEH3wM94VfqLTZcOM=
 github.com/fatih/color v1.18.0/go.mod h1:4FelSpRwEGDpQ12mAdzqdOukCy4u8WUtOY6lkT/6HfU=
-github.com/geektr-cloud/openmgcl v0.2.2 h1:CqIDlRntoCdPv8K1AHhiZqmqpX9UBhKEQ6nsMPmVeQg=
-github.com/geektr-cloud/openmgcl v0.2.2/go.mod h1:sQ2Tbqar++O+dzc29LGOTk8NOuny4sJpAvzrYR3D6FI=
+github.com/geektr-cloud/openmgcl v0.2.3 h1:wN0LCxf3SVp5iY3DP159LFCudNOp4Nes36+Mp3t82uA=
+github.com/geektr-cloud/openmgcl v0.2.3/go.mod h1:sQ2Tbqar++O+dzc29LGOTk8NOuny4sJpAvzrYR3D6FI=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
 github.com/go-logr/logr v1.4.3/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
 github.com/go-logr/stdr v1.2.2 h1:hSWxHoqTgW2S2qGc0LTAI563KZ5YKYRhT3MFKZMbjag=

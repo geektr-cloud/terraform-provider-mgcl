@@ -255,6 +255,29 @@ func TestSecretResourceValidateConfig(t *testing.T) {
 			contents: contentsValue(t, map[string]secretContentModel{"key": entry(types.StringValue("v"), types.BoolValue(true))}),
 		},
 		{
+			name:     "dotted name and mixed-case keys",
+			nameAttr: types.StringValue("net.sxxfuture.infra"),
+			contents: contentsValue(t, map[string]secretContentModel{
+				"Region.Name": entry(types.StringValue("us-east-1"), types.BoolValue(false)),
+				"API-Key":     entry(types.StringValue("v"), types.BoolValue(true)),
+			}),
+		},
+		{
+			name:     "uppercase dotted name",
+			nameAttr: types.StringValue("Net.SxxFuture.Infra"),
+			contents: contentsValue(t, map[string]secretContentModel{"Key": entry(types.StringValue("v"), types.BoolValue(true))}),
+		},
+		{
+			name:     "leading punctuation name",
+			nameAttr: types.StringValue("_team/-app"),
+			contents: contentsValue(t, map[string]secretContentModel{"key": entry(types.StringValue("v"), types.BoolValue(true))}),
+		},
+		{
+			name:     "dot and dotdot segments",
+			nameAttr: types.StringValue("a/./../b"),
+			contents: contentsValue(t, nil),
+		},
+		{
 			name:     "empty contents",
 			nameAttr: types.StringValue("app-config"),
 			contents: contentsValue(t, nil),
@@ -280,14 +303,32 @@ func TestSecretResourceValidateConfig(t *testing.T) {
 			contents: types.MapUnknown(secretContentObjectType),
 		},
 		{
-			name:     "invalid name segment",
-			nameAttr: types.StringValue("Team/app"),
+			name:     "name with space",
+			nameAttr: types.StringValue("Team app"),
+			contents: contentsValue(t, nil),
+			wantErr:  "Invalid secret name",
+		},
+		{
+			name:     "name with percent",
+			nameAttr: types.StringValue("team%app"),
 			contents: contentsValue(t, nil),
 			wantErr:  "Invalid secret name",
 		},
 		{
 			name:     "name with empty segment",
 			nameAttr: types.StringValue("team//app"),
+			contents: contentsValue(t, nil),
+			wantErr:  "Invalid secret name",
+		},
+		{
+			name:     "name with wildcard segment",
+			nameAttr: types.StringValue("team/*"),
+			contents: contentsValue(t, nil),
+			wantErr:  "Invalid secret name",
+		},
+		{
+			name:     "name with unicode",
+			nameAttr: types.StringValue("团队"),
 			contents: contentsValue(t, nil),
 			wantErr:  "Invalid secret name",
 		},
@@ -301,6 +342,18 @@ func TestSecretResourceValidateConfig(t *testing.T) {
 			name:     "contents key with slash",
 			nameAttr: types.StringValue("app-config"),
 			contents: contentsValue(t, map[string]secretContentModel{"a/b": entry(types.StringValue("v"), types.BoolValue(true))}),
+			wantErr:  "Invalid secret key",
+		},
+		{
+			name:     "contents key empty",
+			nameAttr: types.StringValue("app-config"),
+			contents: contentsValue(t, map[string]secretContentModel{"": entry(types.StringValue("v"), types.BoolValue(true))}),
+			wantErr:  "Invalid secret key",
+		},
+		{
+			name:     "contents key with space",
+			nameAttr: types.StringValue("app-config"),
+			contents: contentsValue(t, map[string]secretContentModel{"bad key": entry(types.StringValue("v"), types.BoolValue(true))}),
 			wantErr:  "Invalid secret key",
 		},
 		{
@@ -403,6 +456,35 @@ func TestSecretResourceCreateWritesOneAtomicBatch(t *testing.T) {
 	}
 }
 
+func TestSecretResourceCreatePathEscapeStableNames(t *testing.T) {
+	api := newFakeProviderAPI(t)
+	r := newTestSecretResource(newProviderData(api.url(), "token"))
+	sch := managedSecretSchema(t)
+
+	resp, _ := createManagedSecret(t, r, sch, types.StringValue("net.sxxfuture.infra"),
+		contentsValue(t, map[string]secretContentModel{
+			"Region.Name": entry(types.StringValue("us-east-1"), types.BoolValue(false)),
+			"API-Key":     entry(types.StringValue("s3cr3t"), types.BoolValue(true)),
+		}))
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("create failed: %v", resp.Diagnostics.Errors())
+	}
+
+	values, marks, ok := api.secretValues("net.sxxfuture.infra")
+	if !ok || len(values) != 2 {
+		t.Fatalf("stored values = %v, want two mixed-case dotted KVs", values)
+	}
+
+	if values["Region.Name"] != "us-east-1" || marks["Region.Name"] != false {
+		t.Fatalf("Region.Name = %q/%v, want us-east-1/public", values["Region.Name"], marks["Region.Name"])
+	}
+
+	if values["API-Key"] != "s3cr3t" || marks["API-Key"] != true {
+		t.Fatalf("API-Key = %q/%v, want s3cr3t/ephemeral", values["API-Key"], marks["API-Key"])
+	}
+}
+
 func TestSecretResourceCreateEmptyMapEnsuresSecret(t *testing.T) {
 	api := newFakeProviderAPI(t)
 	r := newTestSecretResource(newProviderData(api.url(), "token"))
@@ -483,7 +565,7 @@ func TestSecretResourceCreateRejectsUnknownAndNullWithoutRequest(t *testing.T) {
 		},
 		{
 			name:     "invalid name",
-			nameAttr: types.StringValue("App/config"),
+			nameAttr: types.StringValue("App config"),
 			contents: contentsValue(t, nil),
 			want:     "Invalid secret name",
 		},

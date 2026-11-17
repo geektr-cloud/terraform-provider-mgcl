@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,7 @@ const minTofuMinor = 11
 
 // providerVersion is the version the e2e binary reports. The filesystem mirror
 // layout and the built binary must agree.
-const providerVersion = "0.2.2"
+const providerVersion = "0.2.3"
 
 var (
 	moduleRoot = findModuleRoot()
@@ -679,15 +680,15 @@ func splitFakeReference(reference string) (string, string, bool) {
 }
 
 // validFakeSecretName mirrors the hierarchical Secret name grammar: one or
-// more slash-separated segments, each matching the v1 segment pattern, with a
-// total length of at most 64 bytes.
+// more non-empty slash-separated segments, each unchanged by url.PathEscape,
+// with a total length of at most 64 bytes.
 func validFakeSecretName(name string) bool {
 	if name == "" || len(name) > 64 {
 		return false
 	}
 
 	for _, segment := range strings.Split(name, "/") {
-		if !fakeSecretNamePattern.MatchString(segment) {
+		if segment == "" || segment != url.PathEscape(segment) {
 			return false
 		}
 	}
@@ -695,11 +696,11 @@ func validFakeSecretName(name string) bool {
 	return true
 }
 
+// validFakeSecretKey mirrors the KV key grammar: one non-empty segment of at
+// most 64 bytes that is unchanged by url.PathEscape, so it cannot contain '/'.
 func validFakeSecretKey(key string) bool {
-	return fakeSecretNamePattern.MatchString(key)
+	return key != "" && len(key) <= 64 && key == url.PathEscape(key)
 }
-
-var fakeSecretNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // setValues replaces the values of the default "bootstrap" Secret and marks
 // every KV ephemeral.

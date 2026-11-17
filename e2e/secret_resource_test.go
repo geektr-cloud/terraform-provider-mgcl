@@ -426,6 +426,64 @@ check "ephemeral_read" {
 	assertNoToken(t, "read apply output", readApply.output(), token)
 }
 
+// TestE2EManagedSecretPathEscapeStableNames applies a dotted name and
+// mixed-case, dotted KV keys that are valid because url.PathEscape leaves each
+// segment unchanged, even though they fall outside the old lowercase slug grammar.
+func TestE2EManagedSecretPathEscapeStableNames(t *testing.T) {
+	tofu := requireTofu(t)
+	binDir := buildProvider(t, "dev")
+
+	const token = "e2e-path-escape-token"
+
+	api := newFakeProviderAPI(t, token)
+
+	work := t.TempDir()
+	cliConfig := writeFile(t, work, "dev.tfrc", devOverridesConfig(t, binDir))
+
+	env := tofuEnv(t, cliConfig, map[string]string{
+		"MGCL_PROVIDER_ENDPOINT": api.url(),
+		"MGCL_PROVIDER_TOKEN":    token,
+	})
+
+	writeFile(t, work, "main.tf", providerBlock+`
+resource "mgcl_secret" "dotted" {
+  name = "net.sxxfuture.infra"
+  contents = {
+    "Region.Name" = { value = "us-east-1", ephemeral_mark = false }
+    "API-Key"     = { value = "s3cr3t-value" }
+  }
+}
+`)
+
+	apply := runTofu(t, tofu, work, env, "apply", "-no-color", "-input=false", "-auto-approve")
+	apply.requireSuccess(t, "apply creating a PathEscape-stable managed Secret")
+
+	values, marks, ok := api.secretValues("net.sxxfuture.infra")
+	if !ok {
+		t.Fatal("managed Secret with a dotted name was not created")
+	}
+
+	if len(values) != 2 {
+		t.Fatalf("stored values = %v, want two mixed-case dotted KVs", values)
+	}
+
+	if values["Region.Name"] != "us-east-1" || marks["Region.Name"] != false {
+		t.Fatalf("Region.Name = %q/%v, want us-east-1/public", values["Region.Name"], marks["Region.Name"])
+	}
+
+	if values["API-Key"] != "s3cr3t-value" || marks["API-Key"] != true {
+		t.Fatalf("API-Key = %q/%v, want s3cr3t-value/ephemeral", values["API-Key"], marks["API-Key"])
+	}
+
+	state := readFileString(t, filepath.Join(work, "terraform.tfstate"))
+	if !strings.Contains(state, "net.sxxfuture.infra") || !strings.Contains(state, "Region.Name") {
+		t.Fatal("state does not persist the PathEscape-stable name and key")
+	}
+
+	assertNoToken(t, "apply output", apply.output(), token)
+	assertNoToken(t, "state file", state, token)
+}
+
 // TestE2EManagedSecretValidationFailsBeforeRequests covers config-time
 // validation for hierarchical names and bare KV keys.
 func TestE2EManagedSecretValidationFailsBeforeRequests(t *testing.T) {
@@ -453,7 +511,43 @@ func TestE2EManagedSecretValidationFailsBeforeRequests(t *testing.T) {
 			name: "invalid name",
 			hcl: `
 resource "mgcl_secret" "bad" {
-  name = "Team/cred"
+  name = "Team cred"
+  contents = {
+    key = { value = "v" }
+  }
+}
+`,
+			want: "Invalid secret name",
+		},
+		{
+			name: "name with percent",
+			hcl: `
+resource "mgcl_secret" "bad" {
+  name = "team%cred"
+  contents = {
+    key = { value = "v" }
+  }
+}
+`,
+			want: "Invalid secret name",
+		},
+		{
+			name: "name with empty segment",
+			hcl: `
+resource "mgcl_secret" "bad" {
+  name = "team//cred"
+  contents = {
+    key = { value = "v" }
+  }
+}
+`,
+			want: "Invalid secret name",
+		},
+		{
+			name: "name with wildcard segment",
+			hcl: `
+resource "mgcl_secret" "bad" {
+  name = "team/*"
   contents = {
     key = { value = "v" }
   }
@@ -468,6 +562,18 @@ resource "mgcl_secret" "bad" {
   name = "team/cred"
   contents = {
     "nested/key" = { value = "v" }
+  }
+}
+`,
+			want: "Invalid secret key",
+		},
+		{
+			name: "key with unicode",
+			hcl: `
+resource "mgcl_secret" "bad" {
+  name = "team/cred"
+  contents = {
+    "团队" = { value = "v" }
   }
 }
 `,

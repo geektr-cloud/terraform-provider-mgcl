@@ -192,9 +192,15 @@ func TestSecretKVResourceValidateConfig(t *testing.T) {
 	}{
 		{name: "valid", key: types.StringValue("app-config/region")},
 		{name: "hierarchical name", key: types.StringValue("aws-605592676484-cn/scarborough/region")},
+		{name: "uppercase name and key", key: types.StringValue("Bootstrap/Region")},
+		{name: "dotted name and key", key: types.StringValue("net.sxxfuture.infra/Region.Name")},
+		{name: "leading punctuation", key: types.StringValue("-app/_config/.key")},
+		{name: "dotdot key", key: types.StringValue("app-config/..")},
 		{name: "no slash", key: types.StringValue("not-a-reference"), wantErr: true},
 		{name: "wildcard", key: types.StringValue("app-config/*"), wantErr: true},
-		{name: "uppercase", key: types.StringValue("App/region"), wantErr: true},
+		{name: "space in key", key: types.StringValue("app-config/bad key"), wantErr: true},
+		{name: "percent in name", key: types.StringValue("app%config/key"), wantErr: true},
+		{name: "empty key", key: types.StringValue("app-config/"), wantErr: true},
 		{name: "null skipped", key: types.StringNull()},
 		{name: "unknown skipped", key: types.StringUnknown()},
 	}
@@ -274,6 +280,31 @@ func TestSecretKVResourceCreateWritesKV(t *testing.T) {
 	}
 }
 
+func TestSecretKVResourceCreatePathEscapeStableReference(t *testing.T) {
+	api := newFakeProviderAPI(t)
+	r := newTestSecretKVResource(newProviderData(api.url(), "test-token-xyz"))
+	sch := resourceSchema(t)
+
+	resp, state := createSecretKV(t, r, sch,
+		types.StringValue("net.sxxfuture.infra/Region.Name"), types.StringValue("us-east-1"), types.BoolValue(false))
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	if state.Key.ValueString() != "net.sxxfuture.infra/Region.Name" {
+		t.Fatalf("state key = %q, want the dotted mixed-case reference", state.Key.ValueString())
+	}
+
+	values, marks, ok := api.secretValues("net.sxxfuture.infra")
+	if !ok {
+		t.Fatal("Secret was not created")
+	}
+
+	if values["Region.Name"] != "us-east-1" || marks["Region.Name"] != false {
+		t.Fatalf("stored value/mark = %q/%v, want us-east-1/false", values["Region.Name"], marks["Region.Name"])
+	}
+}
+
 func TestSecretKVResourceCreateDefaultsNullMarkToEphemeral(t *testing.T) {
 	api := newFakeProviderAPI(t)
 	r := newTestSecretKVResource(newProviderData(api.url(), "token"))
@@ -327,7 +358,7 @@ func TestSecretKVResourceCreateRejectsInvalidKeyWithoutRequest(t *testing.T) {
 	r := newTestSecretKVResource(newProviderData(api.url(), "token"))
 	sch := resourceSchema(t)
 
-	for _, key := range []string{"app-config", "app-config/*", "app-config/", "/key", "app-config//key", "Bootstrap/a", "app-config/Key", ""} {
+	for _, key := range []string{"app-config", "app-config/*", "app-config/", "/key", "app-config//key", "app config/key", "app-config/bad key", "app-config/%", "app-config/团队", ""} {
 		resp, _ := createSecretKV(t, r, sch, types.StringValue(key), types.StringValue("v"), types.BoolValue(true))
 		if !resp.Diagnostics.HasError() {
 			t.Fatalf("key %q: expected an error", key)

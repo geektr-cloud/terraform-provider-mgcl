@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -71,12 +72,23 @@ func TestSecretEphemeralResourceValidateConfig(t *testing.T) {
 		{name: "single char", value: types.StringValue("a")},
 		{name: "digits and separators", value: types.StringValue("a1_b-2")},
 		{name: "max length", value: types.StringValue(strings.Repeat("a", 64))},
-		{name: "uppercase", value: types.StringValue("Bootstrap"), wantErr: true},
-		{name: "leading dash", value: types.StringValue("-bootstrap"), wantErr: true},
-		{name: "leading underscore", value: types.StringValue("_bootstrap"), wantErr: true},
+		{name: "uppercase", value: types.StringValue("Bootstrap")},
+		{name: "leading dash", value: types.StringValue("-bootstrap")},
+		{name: "leading underscore", value: types.StringValue("_bootstrap")},
+		{name: "leading dot", value: types.StringValue(".hidden")},
+		{name: "dotted name", value: types.StringValue("net.sxxfuture.infra")},
+		{name: "mixed case dotted name", value: types.StringValue("Net.SxxFuture.Infra")},
+		{name: "path-safe punctuation", value: types.StringValue("a$b&c+d=e:f@g~h")},
 		{name: "space", value: types.StringValue("boot strap"), wantErr: true},
+		{name: "percent", value: types.StringValue("boot%strap"), wantErr: true},
+		{name: "question mark", value: types.StringValue("boot?strap"), wantErr: true},
+		{name: "hash", value: types.StringValue("boot#strap"), wantErr: true},
+		{name: "unicode", value: types.StringValue("秘密"), wantErr: true},
+		{name: "wildcard segment", value: types.StringValue("a/*"), wantErr: true},
 		{name: "hierarchical", value: types.StringValue("aws-605592676484-cn/scarborough")},
 		{name: "deep hierarchical", value: types.StringValue("a/b/c")},
+		{name: "dot segment", value: types.StringValue("a/./b")},
+		{name: "dotdot segment", value: types.StringValue("a/../b")},
 		{name: "trailing slash", value: types.StringValue("a/"), wantErr: true},
 		{name: "empty segment", value: types.StringValue("a//b"), wantErr: true},
 		{name: "leading slash", value: types.StringValue("/a"), wantErr: true},
@@ -103,6 +115,88 @@ func TestSecretEphemeralResourceValidateConfig(t *testing.T) {
 				t.Fatalf("HasError = %v, want %v (diagnostics: %v)", got, tc.wantErr, resp.Diagnostics.Errors())
 			}
 		})
+	}
+}
+
+func TestValidateSecretNameAndKeyPathEscapeBoundary(t *testing.T) {
+	t.Parallel()
+
+	validNames := []string{
+		".",
+		"..",
+		"-a",
+		"_a",
+		"A",
+		"a1_b-2",
+		"net.sxxfuture.infra",
+		"a/./../b",
+		"$&+=:@~",
+		strings.Repeat("a", 64),
+	}
+	for _, name := range validNames {
+		if err := validateSecretName(name); err != nil {
+			t.Errorf("validateSecretName(%q) = %v, want nil", name, err)
+		}
+	}
+
+	invalidNames := []string{
+		"",
+		"a b",
+		"a%b",
+		"a?b",
+		"a#b",
+		"秘密",
+		"a;b",
+		"a,b",
+		"a/*",
+		"a//b",
+		"a/",
+		"/a",
+		strings.Repeat("a", 65),
+	}
+	for _, name := range invalidNames {
+		if err := validateSecretName(name); err == nil {
+			t.Errorf("validateSecretName(%q) = nil, want an error", name)
+		}
+	}
+
+	validKeys := []string{
+		".",
+		"..",
+		"-a",
+		"_a",
+		"A",
+		"Region.Name",
+		"$&+=:@~",
+		strings.Repeat("a", 64),
+	}
+	for _, key := range validKeys {
+		if err := validateSecretKey(key); err != nil {
+			t.Errorf("validateSecretKey(%q) = %v, want nil", key, err)
+		}
+	}
+
+	if got := url.PathEscape("*"); got != "%2A" {
+		t.Fatalf("url.PathEscape(\"*\") = %q, want %%2A", got)
+	}
+
+	invalidKeys := []string{
+		"",
+		"*",
+		"a/b",
+		"a b",
+		"a%b",
+		"a?b",
+		"a#b",
+		"秘密",
+		"a;b",
+		"a,b",
+		strings.Repeat("a", 65),
+	}
+	for _, key := range invalidKeys {
+		if err := validateSecretKey(key); err == nil {
+			t.Errorf("validateSecretKey(%q) = nil, want an error", key)
+		}
 	}
 }
 
@@ -441,7 +535,7 @@ func TestSecretEphemeralResourceOpenRejectsInvalidName(t *testing.T) {
 	r := newTestResource(&providerData{Endpoint: api.url(), Token: "token"})
 	sch := secretSchema(t)
 
-	resp := openSecret(t, r, secretConfig(t, sch, types.StringValue("Bootstrap")))
+	resp := openSecret(t, r, secretConfig(t, sch, types.StringValue("bad name")))
 
 	if !resp.Diagnostics.HasError() {
 		t.Fatal("expected an error diagnostic for an invalid name")
