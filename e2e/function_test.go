@@ -82,6 +82,79 @@ resource "terraform_data" "wildcard" {
 	}
 }
 
+const ephemeralValueFunction = "provider::mgcl::i_just_fucking_wanna_read_ephemeral"
+
+// TestE2ESecretValueEphemeralFunctionSingleAndWildcard covers the all-KV
+// function through a real OpenTofu binary: <secret>/<key> returns a string,
+// <secret>/* returns every KV, access is always "ephemeral", and both results
+// are deliberately persisted in state because this function has no OpenTofu
+// ephemeral semantics.
+func TestE2ESecretValueEphemeralFunctionSingleAndWildcard(t *testing.T) {
+	tofu := requireTofu(t)
+	binDir := buildProvider(t, "dev")
+
+	const token = "e2e-ephemeral-function-token"
+
+	api := newFakeProviderAPI(t, token)
+	api.setSecret("mixed",
+		map[string]string{
+			"public_kv":    "PUBLIC-VALUE",
+			"ephemeral_kv": "EPHEMERAL-VALUE",
+		},
+		map[string]bool{"public_kv": false, "ephemeral_kv": true},
+	)
+
+	work := t.TempDir()
+	cliConfig := writeFile(t, work, "dev.tfrc", devOverridesConfig(t, binDir))
+
+	env := tofuEnv(t, cliConfig, map[string]string{
+		"MGCL_PROVIDER_ENDPOINT": api.url(),
+		"MGCL_PROVIDER_TOKEN":    token,
+	})
+
+	writeFile(t, work, "main.tf", providerBlock+`
+resource "terraform_data" "single" {
+  input = `+ephemeralValueFunction+`("mixed/ephemeral_kv")
+}
+
+resource "terraform_data" "wildcard" {
+  input = `+ephemeralValueFunction+`("mixed/*")
+}
+`)
+
+	apply := runTofu(t, tofu, work, env, "apply", "-no-color", "-input=false", "-auto-approve")
+	apply.requireSuccess(t, "apply with all-KV provider function")
+
+	state := readFileString(t, filepath.Join(work, "terraform.tfstate"))
+	for _, want := range []string{"PUBLIC-VALUE", "EPHEMERAL-VALUE", `"public_kv"`, `"ephemeral_kv"`} {
+		if !strings.Contains(state, want) {
+			t.Fatalf("state does not persist all-KV function result %q:\n%s", want, state)
+		}
+	}
+
+	assertNoToken(t, "apply output", apply.output(), token)
+	assertNoToken(t, "state file", state, token)
+
+	calls := api.requestList()
+	if len(calls) == 0 {
+		t.Fatal("plan/apply made no provider API request")
+	}
+
+	for _, call := range calls {
+		if call.path != "/api/mgcl/v1/secrets:read" {
+			t.Fatalf("unexpected provider request path %q", call.path)
+		}
+
+		if call.access != "ephemeral" {
+			t.Fatalf("access = %q, want ephemeral", call.access)
+		}
+
+		if call.name != "mixed" {
+			t.Fatalf("requested secret = %q, want mixed", call.name)
+		}
+	}
+}
+
 // TestE2ESecretValueFunctionRejectsEphemeralKV proves an ephemeral KV is not
 // part of the public set and never appears in the failure output.
 func TestE2ESecretValueFunctionRejectsEphemeralKV(t *testing.T) {

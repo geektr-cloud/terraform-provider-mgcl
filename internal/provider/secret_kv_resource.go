@@ -50,8 +50,8 @@ func (r *secretKVResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"value is always stored in plan and state; `Sensitive` only hides it from CLI " +
 			"output. Changing `key` replaces the resource; changing `value` or `ephemeral_mark` updates the same KV in place.\n\n" +
 			"> **Warning:** do not read the same KV through `provider::mgcl::secret_value` or `mgcl_secret` in the same " +
-			"> OpenTofu project that manages it with `mgcl_secret_kv`. The mgcl provider does not promise idempotence or " +
-			"> transaction ordering between resource writes and function/ephemeral reads; use a separate project for reads.",
+			"OpenTofu project that manages it with `mgcl_secret_kv`. The mgcl provider does not promise idempotence or " +
+			"transaction ordering between resource writes and function/ephemeral reads; use a separate project for reads.",
 		Attributes: map[string]resourceschema.Attribute{
 			"key": resourceschema.StringAttribute{
 				Required: true,

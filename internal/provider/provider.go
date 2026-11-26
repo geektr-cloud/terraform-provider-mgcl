@@ -7,6 +7,8 @@
 //     and persists their values in plan and state;
 //   - the provider::mgcl::secret_value function, which reads public KVs and
 //     returns ordinary string or map data;
+//   - the provider::mgcl::i_just_fucking_wanna_read_ephemeral function, which
+//     reads public and ephemeral KVs and returns ordinary string or map data;
 //   - the mgcl_secret_kv managed resource, which writes one KV and persists
 //     its value in plan and state.
 //
@@ -51,8 +53,11 @@ type mgclProvider struct {
 // OpenTofu may call provider functions before ConfigureProvider, so the
 // function path also initializes providerData directly from the environment.
 //
-// The public-KV cache lives here so it follows the provider configuration and
+// The function caches live here so they follow the provider configuration and
 // its lifetime, rather than a package-level registry keyed by credentials.
+// publicValues and allValues are deliberately separate namespaces: a public
+// read must never serve an all-KV read, and an all-KV read must never leak
+// ephemeral values into the public function.
 type providerData struct {
 	mu       sync.RWMutex
 	Endpoint string
@@ -60,6 +65,7 @@ type providerData struct {
 
 	cacheMu      sync.Mutex
 	publicValues map[string]map[string]string
+	allValues    map[string]map[string]string
 }
 
 func newProviderDataFromEnv() *providerData {
@@ -74,6 +80,7 @@ func newProviderData(endpoint, token string) *providerData {
 		Endpoint:     endpoint,
 		Token:        token,
 		publicValues: map[string]map[string]string{},
+		allValues:    map[string]map[string]string{},
 	}
 }
 
@@ -115,6 +122,9 @@ func (p *mgclProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp 
 			"The `mgcl_secret` ephemeral resource keeps values out of plan and state. " +
 			"The `provider::mgcl::secret_value` function reads only KVs marked public; its result is ordinary " +
 			"string or map data that OpenTofu may persist in plan, state and logs. " +
+			"The `provider::mgcl::i_just_fucking_wanna_read_ephemeral` function reads public and ephemeral KVs; " +
+			"its result is also ordinary string or map data that OpenTofu may persist, and the function name does " +
+			"not grant OpenTofu ephemeral semantics. " +
 			"The `mgcl_secret` managed resource owns a set of KVs in one Secret; their values are always stored in " +
 			"plan and state, and `Sensitive` only hides them from CLI output. " +
 			"The `mgcl_secret_kv` managed resource writes one KV; its value is always stored in plan and state, " +
@@ -179,6 +189,9 @@ func (p *mgclProvider) Functions(_ context.Context) []func() function.Function {
 	return []func() function.Function{
 		func() function.Function {
 			return NewSecretValueFunction(p)
+		},
+		func() function.Function {
+			return NewSecretValueEphemeralFunction(p)
 		},
 	}
 }

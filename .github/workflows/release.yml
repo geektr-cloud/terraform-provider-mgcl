@@ -30,6 +30,19 @@ jobs:
           tofu_version: "1.13.9"
           tofu_wrapper: false
 
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.2"
+          terraform_wrapper: false
+
+      - name: Generate docs
+        run: make generate
+
+      - name: Check generated docs
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+
       - name: Test
         run: go test ./... -count=1
 

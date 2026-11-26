@@ -78,20 +78,32 @@ func TestProviderRegistersEphemeralResourceFunctionAndManagedResource(t *testing
 	}
 
 	functions := p.(provider.ProviderWithFunctions).Functions(context.Background())
-	if len(functions) != 1 {
-		t.Fatalf("functions = %d, want 1", len(functions))
+	if len(functions) != 2 {
+		t.Fatalf("functions = %d, want 2", len(functions))
 	}
 
-	f := functions[0]()
-	if _, ok := f.(*secretValueFunction); !ok {
-		t.Fatalf("function type = %T, want *secretValueFunction", f)
+	functionNames := map[string]bool{}
+
+	for _, factory := range functions {
+		f := factory()
+		if _, ok := f.(*secretValueFunction); !ok {
+			t.Fatalf("function type = %T, want *secretValueFunction", f)
+		}
+
+		var metadata function.MetadataResponse
+		f.Metadata(context.Background(), function.MetadataRequest{}, &metadata)
+
+		if functionNames[metadata.Name] {
+			t.Fatalf("function %q registered twice", metadata.Name)
+		}
+
+		functionNames[metadata.Name] = true
 	}
 
-	var metadata function.MetadataResponse
-	f.Metadata(context.Background(), function.MetadataRequest{}, &metadata)
-
-	if metadata.Name != "secret_value" {
-		t.Fatalf("function name = %q, want secret_value", metadata.Name)
+	for _, want := range []string{"secret_value", secretEphemeralValueFunctionName} {
+		if !functionNames[want] {
+			t.Fatalf("function %q is not registered; got %v", want, functionNames)
+		}
 	}
 
 	ephemerals := p.(provider.ProviderWithEphemeralResources).EphemeralResources(context.Background())

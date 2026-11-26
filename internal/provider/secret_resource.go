@@ -79,9 +79,9 @@ func (r *secretResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"only one resource or `mgcl_secret_kv`; different resources may manage disjoint keys of the same Secret, " +
 			"but overlapping ownership is unsupported. This resource cannot be imported.\n\n" +
 			"> **Warning:** do not read the same KV through `provider::mgcl::secret_value` or the `mgcl_secret` ephemeral " +
-			"> resource in the same OpenTofu project that manages it with the `mgcl_secret` managed resource. The mgcl " +
-			"> provider does not promise idempotence or transaction ordering between resource writes and function or " +
-			"> ephemeral reads; use a separate project for reads.",
+			"resource in the same OpenTofu project that manages it with the `mgcl_secret` managed resource. The mgcl " +
+			"provider does not promise idempotence or transaction ordering between resource writes and function or " +
+			"ephemeral reads; use a separate project for reads.",
 		Attributes: map[string]resourceschema.Attribute{
 			"name": resourceschema.StringAttribute{
 				Required: true,

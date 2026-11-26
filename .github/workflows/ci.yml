@@ -38,6 +38,13 @@ jobs:
           tofu_version: ${{ matrix.tofu }}
           tofu_wrapper: false
 
+      - name: Setup Terraform for docs
+        if: matrix.tofu == '1.13.9'
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.2"
+          terraform_wrapper: false
+
       - name: Check gofmt
         run: |
           unformatted="$(gofmt -l .)"
@@ -61,3 +68,13 @@ jobs:
 
       - name: Verify modules
         run: go mod verify
+
+      - name: Generate docs
+        if: matrix.tofu == '1.13.9'
+        run: make generate
+
+      - name: Check generated docs
+        if: matrix.tofu == '1.13.9'
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain)"

@@ -27,7 +27,7 @@ const minTofuMinor = 11
 
 // providerVersion is the version the e2e binary reports. The filesystem mirror
 // layout and the built binary must agree.
-const providerVersion = "0.2.3"
+const providerVersion = "0.2.4"
 
 var (
 	moduleRoot = findModuleRoot()

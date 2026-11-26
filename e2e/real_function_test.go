@@ -145,3 +145,76 @@ resource "terraform_data" "probe" {
 	assertNoToken(t, "mixed state file", readState, token4)
 	assertNoSecrets(t, "mixed apply output", readApply.output(), ephemeralVal, publicRegion)
 }
+
+// TestRealEphemeralSecretValueFunction reads a mixed Secret through the real
+// mgcl CLI, provider API and OpenTofu. The all-KV function returns public and
+// ephemeral values as ordinary data, so both are persisted in state; only the
+// provider token must stay out of output and state.
+func TestRealEphemeralSecretValueFunction(t *testing.T) {
+	tofu := requireTofu(t)
+	mgcl := buildMgcl(t)
+	binDir := buildProvider(t, "dev")
+
+	home := t.TempDir()
+	db := filepath.Join(home, "mgcl.db")
+	key := writeEd25519Key(t, filepath.Join(home, "id_ed25519"))
+
+	secretEnv := tofuEnv(t, "", nil)
+
+	const (
+		secretName   = "app-config"
+		publicRegion = "us-east-1"
+		ephemeralVal = "EPHEMERAL-REAL-VALUE"
+	)
+
+	secretCLI(t, mgcl, secretEnv,
+		"secret", "create", secretName, "--db", db, "--encryption-key-file", key)
+	secretCLI(t, mgcl, secretEnv,
+		"secret", "set", secretName+"/region", publicRegion, "--public", "--db", db, "--encryption-key-file", key)
+	secretCLI(t, mgcl, secretEnv,
+		"secret", "set", secretName+"/token", ephemeralVal, "--db", db, "--encryption-key-file", key)
+
+	work := t.TempDir()
+	cliConfig := writeFile(t, work, "dev.tfrc", devOverridesConfig(t, binDir))
+
+	writeFile(t, work, "main.tf", providerBlock+`
+resource "terraform_data" "single" {
+  input = `+ephemeralValueFunction+`("`+secretName+`/token")
+}
+
+resource "terraform_data" "wildcard" {
+  input = `+ephemeralValueFunction+`("`+secretName+`/*")
+}
+`)
+
+	capture1 := filepath.Join(work, "env1.txt")
+	planEnv := tofuEnv(t, cliConfig, map[string]string{"MGCL_E2E_CAPTURE": capture1})
+
+	plan := runMgcl(t, mgcl, work, planEnv, mgclRunArgs(db, key,
+		captureCommand(capture1, tofu, "plan", "-no-color", "-input=false", "-out=plan.bin")...)...)
+	plan.requireSuccess(t, "mgcl run -- tofu plan (all-KV function)")
+
+	_, token1 := readCapture(t, capture1)
+	assertNoToken(t, "plan output", plan.output(), token1)
+
+	capture2 := filepath.Join(work, "env2.txt")
+	applyEnv := tofuEnv(t, cliConfig, map[string]string{"MGCL_E2E_CAPTURE": capture2})
+
+	apply := runMgcl(t, mgcl, work, applyEnv, mgclRunArgs(db, key,
+		captureCommand(capture2, tofu, "apply", "-no-color", "-input=false", "-auto-approve", "plan.bin")...)...)
+	apply.requireSuccess(t, "mgcl run -- tofu apply (all-KV function)")
+
+	_, token2 := readCapture(t, capture2)
+	assertNoToken(t, "apply output", apply.output(), token1)
+	assertNoToken(t, "apply output", apply.output(), token2)
+
+	state := readFileString(t, filepath.Join(work, "terraform.tfstate"))
+	for _, want := range []string{publicRegion, ephemeralVal, `"region"`, `"token"`} {
+		if !strings.Contains(state, want) {
+			t.Fatalf("state does not persist all-KV function result %q:\n%s", want, state)
+		}
+	}
+
+	assertNoToken(t, "state file", state, token1)
+	assertNoToken(t, "state file", state, token2)
+}
